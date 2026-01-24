@@ -1,0 +1,285 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\TrialClass;
+use App\Models\Package;
+use App\Models\Timetable;
+use App\Models\ActivityLog;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Pagination\LengthAwarePaginator;
+
+class TrialService
+{
+    /**
+     * Get trials list with filters and pagination
+     */
+    public function getTrials(array $filters = [], int $perPage = 15): LengthAwarePaginator
+    {
+        $query = TrialClass::with(['student', 'teacher', 'course', 'convertedPackage']);
+
+        // Apply filters
+        if (isset($filters['status']) && $filters['status'] !== 'all') {
+            $query->where('status', $filters['status']);
+        }
+
+        if (isset($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+
+        if (isset($filters['teacher_id'])) {
+            $query->where('teacher_id', $filters['teacher_id']);
+        }
+
+        if (isset($filters['course_id'])) {
+            $query->where('course_id', $filters['course_id']);
+        }
+
+        if (isset($filters['date_from'])) {
+            $query->where('trial_date', '>=', $filters['date_from']);
+        }
+
+        if (isset($filters['date_to'])) {
+            $query->where('trial_date', '<=', $filters['date_to']);
+        }
+
+        if (isset($filters['search'])) {
+            $search = $filters['search'];
+            $query->whereHas('student', function ($q) use ($search) {
+                $q->where('full_name', 'like', "%{$search}%");
+            });
+        }
+
+        return $query->orderBy('trial_date', 'desc')
+            ->orderBy('start_time', 'desc')
+            ->paginate($perPage);
+    }
+
+    /**
+     * Get single trial with relationships
+     */
+    public function getTrial(int $id): TrialClass
+    {
+        return TrialClass::with(['student', 'teacher', 'course', 'convertedPackage'])
+            ->findOrFail($id);
+    }
+
+    /**
+     * Create new trial class
+     */
+    public function createTrial(array $data): TrialClass
+    {
+        // Handle new student creation
+        if (isset($data['new_student']) && is_array($data['new_student'])) {
+            $newStudentData = $data['new_student'];
+            $student = \App\Models\Student::create([
+                'full_name' => $newStudentData['full_name'],
+                'email' => $newStudentData['email'] ?? null,
+                'whatsapp' => $newStudentData['whatsapp'] ?? null,
+                'country' => $newStudentData['country'] ?? null,
+                'currency' => $newStudentData['currency'] ?? 'USD',
+                'timezone' => $newStudentData['timezone'] ?? 'UTC',
+                'status' => 'active',
+                'type' => 'trial', // Default to trial for new students
+            ]);
+            $data['student_id'] = $student->id;
+            unset($data['new_student']);
+        }
+
+        $trial = TrialClass::create($data);
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $trial->student_id,
+            'action' => 'create',
+            'description' => "Trial class created for student {$trial->student->full_name}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $trial->load(['student', 'teacher', 'course']);
+    }
+
+    /**
+     * Update trial details
+     */
+    public function updateTrial(int $id, array $data): TrialClass
+    {
+        $trial = TrialClass::findOrFail($id);
+
+        // Only allow editing pending trials
+        if ($trial->status !== 'pending') {
+            throw new \Exception('Only pending trials can be edited');
+        }
+
+        $trial->update($data);
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $trial->student_id,
+            'action' => 'update',
+            'description' => "Trial class updated for student {$trial->student->full_name}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $trial->fresh()->load(['student', 'teacher', 'course']);
+    }
+
+    /**
+     * Update trial status
+     */
+    public function updateTrialStatus(int $id, string $status, ?string $notes = null): TrialClass
+    {
+        $trial = TrialClass::findOrFail($id);
+        $oldStatus = $trial->status;
+
+        // Validate status transition
+        if ($trial->status === 'converted') {
+            throw new \Exception('Converted trials cannot have their status changed');
+        }
+
+        $trial->update([
+            'status' => $status,
+            'notes' => $notes ?? $trial->notes,
+        ]);
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $trial->student_id,
+            'action' => 'update_status',
+            'description' => "Trial class status changed from {$oldStatus} to {$status}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $trial->fresh()->load(['student', 'teacher', 'course']);
+    }
+
+    /**
+     * Convert trial to regular package and timetable
+     */
+    public function convertToRegular(int $trialId, array $packageData, array $timetableData): array
+    {
+        $trial = TrialClass::findOrFail($trialId);
+
+        // Validate that trial can be converted
+        if ($trial->status === 'converted') {
+            throw new \Exception('Trial has already been converted');
+        }
+
+        if (!in_array($trial->status, ['pending', 'completed'])) {
+            throw new \Exception('Only pending or completed trials can be converted');
+        }
+
+        return DB::transaction(function () use ($trial, $packageData, $timetableData) {
+            // Create package (using total_hours)
+            $totalHours = $packageData['total_hours'] ?? 0;
+            $package = Package::create([
+                'student_id' => $trial->student_id,
+                'start_date' => $packageData['start_date'],
+                'total_classes' => 0, // Not used, kept for backward compatibility
+                'remaining_classes' => 0, // Not used, kept for backward compatibility
+                'total_hours' => $totalHours,
+                'remaining_hours' => $totalHours,
+                'hour_price' => $packageData['hour_price'],
+                'currency' => $packageData['currency'] ?? $trial->student->currency ?? 'USD',
+                'round_number' => $this->getNextRoundNumber($trial->student_id),
+                'status' => 'active',
+            ]);
+
+            // Create timetable
+            $timetable = Timetable::create([
+                'student_id' => $trial->student_id,
+                'teacher_id' => $trial->teacher_id,
+                'course_id' => $trial->course_id,
+                'days_of_week' => $timetableData['days_of_week'],
+                'time_slots' => $timetableData['time_slots'],
+                'student_timezone' => $timetableData['student_timezone'] ?? $trial->student->timezone,
+                'teacher_timezone' => $timetableData['teacher_timezone'] ?? $trial->teacher->timezone,
+                'status' => 'active',
+            ]);
+
+            // Update trial status
+            $trial->update([
+                'status' => 'converted',
+                'converted_to_package_id' => $package->id,
+            ]);
+
+            // Update student type to confirmed when trial is converted
+            $trial->student->update([
+                'type' => 'confirmed',
+            ]);
+
+            // Log activity
+            ActivityLog::create([
+                'user_id' => Auth::id(),
+                'student_id' => $trial->student_id,
+                'action' => 'convert',
+                'description' => "Trial class converted to package #{$package->id} and timetable #{$timetable->id}",
+                'ip_address' => request()->ip(),
+                'created_at' => now(),
+            ]);
+
+            return [
+                'trial' => $trial->fresh()->load(['student', 'teacher', 'course', 'convertedPackage']),
+                'package' => $package->load('student'),
+                'timetable' => $timetable->load(['student', 'teacher', 'course']),
+            ];
+        });
+    }
+
+    /**
+     * Delete trial (only if not converted)
+     */
+    public function deleteTrial(int $id): bool
+    {
+        $trial = TrialClass::findOrFail($id);
+
+        if ($trial->status === 'converted') {
+            throw new \Exception('Converted trials cannot be deleted');
+        }
+
+        // Log activity before deletion
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $trial->student_id,
+            'action' => 'delete',
+            'description' => "Trial class deleted for student {$trial->student->full_name}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $trial->delete();
+    }
+
+    /**
+     * Get trial statistics
+     */
+    public function getTrialStats(): array
+    {
+        return [
+            'total' => TrialClass::count(),
+            'pending' => TrialClass::where('status', 'pending')->count(),
+            'completed' => TrialClass::where('status', 'completed')->count(),
+            'no_show' => TrialClass::where('status', 'no_show')->count(),
+            'converted' => TrialClass::where('status', 'converted')->count(),
+        ];
+    }
+
+    /**
+     * Get next round number for student
+     */
+    private function getNextRoundNumber(int $studentId): int
+    {
+        $lastPackage = Package::where('student_id', $studentId)
+            ->orderBy('round_number', 'desc')
+            ->first();
+
+        return $lastPackage ? $lastPackage->round_number + 1 : 1;
+    }
+}

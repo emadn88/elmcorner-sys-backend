@@ -1,0 +1,63 @@
+<?php
+
+namespace App\Http\Requests\Trial;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreTrialRequest extends FormRequest
+{
+    /**
+     * Determine if the user is authorized to make this request.
+     */
+    public function authorize(): bool
+    {
+        return true; // Permission check handled by middleware
+    }
+
+    /**
+     * Get the validation rules that apply to the request.
+     */
+    public function rules(): array
+    {
+        return [
+            'student_id' => ['required_without:new_student', 'exists:students,id'],
+            'new_student' => ['required_without:student_id', 'array'],
+            'new_student.full_name' => ['required_with:new_student', 'string', 'max:255'],
+            'new_student.email' => ['nullable', 'email', 'max:255'],
+            'new_student.whatsapp' => ['nullable', 'string', 'max:20'],
+            'new_student.country' => ['nullable', 'string', 'max:255'],
+            'new_student.currency' => ['nullable', 'string', 'max:3'],
+            'new_student.timezone' => ['nullable', 'string', 'max:255'],
+            'teacher_id' => ['required', 'exists:teachers,id'],
+            'course_id' => ['required', 'exists:courses,id'],
+            'trial_date' => ['required', 'date', 'after_or_equal:today'],
+            'start_time' => ['required', 'date_format:H:i'],
+            'end_time' => ['required', 'date_format:H:i', 'after:start_time'],
+            'notes' => ['nullable', 'string'],
+        ];
+    }
+
+    /**
+     * Get custom messages for validator errors.
+     */
+    public function messages(): array
+    {
+        return [
+            'student_id.required_without' => 'Either select an existing student or create a new one',
+            'student_id.exists' => 'Selected student does not exist',
+            'new_student.required_without' => 'Either select an existing student or create a new one',
+            'new_student.full_name.required_with' => 'Student name is required',
+            'teacher_id.required' => 'Teacher is required',
+            'teacher_id.exists' => 'Selected teacher does not exist',
+            'course_id.required' => 'Course is required',
+            'course_id.exists' => 'Selected course does not exist',
+            'trial_date.required' => 'Trial date is required',
+            'trial_date.after_or_equal' => 'Trial date must be today or in the future',
+            'start_time.required' => 'Start time is required',
+            'start_time.date_format' => 'Start time must be in HH:mm format',
+            'end_time.required' => 'End time is required',
+            'end_time.date_format' => 'End time must be in HH:mm format',
+            'end_time.after' => 'End time must be after start time',
+        ];
+    }
+}
