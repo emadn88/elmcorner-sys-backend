@@ -13,3 +13,9 @@ Schedule::command('support:send-class-alerts')
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground();
+
+// Schedule WhatsApp reminders to run every minute
+Schedule::command('whatsapp:send-reminders')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground();

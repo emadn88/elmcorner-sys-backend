@@ -227,6 +227,180 @@ class TeacherController extends Controller
     }
 
     /**
+     * Get available time slots for a teacher on a specific date
+     * Excludes booked trials and classes
+     */
+    public function getAvailableTimeSlots(string $id, Request $request): JsonResponse
+    {
+        $teacher = Teacher::findOrFail($id);
+        
+        $request->validate([
+            'date' => 'required|date',
+        ]);
+        
+        $date = \Carbon\Carbon::parse($request->input('date'));
+        $dayOfWeek = $date->dayOfWeek == 0 ? 7 : $date->dayOfWeek; // Convert Sunday (0) to 7
+        
+        // Get teacher's availability for this day of week
+        $availabilitySlots = $teacher->availability()
+            ->where('is_available', true)
+            ->where('day_of_week', $dayOfWeek)
+            ->orderBy('start_time', 'asc')
+            ->get();
+        
+        // Get booked trials for this date
+        $bookedTrials = \App\Models\TrialClass::where('teacher_id', $teacher->id)
+            ->where('trial_date', $date->format('Y-m-d'))
+            ->where('status', '!=', 'cancelled')
+            ->get();
+        
+        // Get booked classes for this date
+        $bookedClasses = \App\Models\ClassInstance::where('teacher_id', $teacher->id)
+            ->where('class_date', $date->format('Y-m-d'))
+            ->where('status', '!=', 'cancelled')
+            ->get();
+        
+        // Filter out booked time slots
+        $dateStr = $date->format('Y-m-d');
+        $availableSlots = $availabilitySlots->filter(function ($slot) use ($bookedTrials, $bookedClasses, $dateStr) {
+            $slotStartTime = strlen($slot->start_time) === 5 ? $slot->start_time : substr($slot->start_time, 0, 5);
+            $slotEndTime = strlen($slot->end_time) === 5 ? $slot->end_time : substr($slot->end_time, 0, 5);
+            
+            $slotStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$slotStartTime}");
+            $slotEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$slotEndTime}");
+            
+            // Check if slot conflicts with any booked trial
+            foreach ($bookedTrials as $trial) {
+                $trialStartTime = strlen($trial->start_time) === 5 ? $trial->start_time : substr($trial->start_time, 0, 5);
+                $trialEndTime = strlen($trial->end_time) === 5 ? $trial->end_time : substr($trial->end_time, 0, 5);
+                
+                $trialStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$trialStartTime}");
+                $trialEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$trialEndTime}");
+                
+                // Check for overlap: slot start < trial end AND slot end > trial start
+                if ($slotStart->lt($trialEnd) && $slotEnd->gt($trialStart)) {
+                    return false; // Slot is booked
+                }
+            }
+            
+            // Check if slot conflicts with any booked class
+            foreach ($bookedClasses as $class) {
+                // ClassInstance has datetime fields, extract time portion
+                $classStartTime = $class->start_time instanceof \Carbon\Carbon 
+                    ? $class->start_time->format('H:i')
+                    : (is_string($class->start_time) ? substr($class->start_time, 11, 5) : '00:00');
+                $classEndTime = $class->end_time instanceof \Carbon\Carbon 
+                    ? $class->end_time->format('H:i')
+                    : (is_string($class->end_time) ? substr($class->end_time, 11, 5) : '00:00');
+                
+                $classStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$classStartTime}");
+                $classEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$classEndTime}");
+                
+                // Check for overlap
+                if ($slotStart->lt($classEnd) && $slotEnd->gt($classStart)) {
+                    return false; // Slot is booked
+                }
+            }
+            
+            return true; // Slot is available
+        })->values();
+        
+        return response()->json([
+            'status' => 'success',
+            'data' => $availableSlots,
+        ]);
+    }
+
+    /**
+     * Get teacher's weekly schedule (availability + classes + trials + timetables)
+     */
+    public function getWeeklySchedule(string $id, Request $request): JsonResponse
+    {
+        $teacher = Teacher::findOrFail($id);
+        
+        // Get week start date (default to current week start - Sunday)
+        $weekStartInput = $request->input('week_start');
+        if ($weekStartInput) {
+            $weekStart = \Carbon\Carbon::parse($weekStartInput)->startOfWeek(\Carbon\Carbon::SUNDAY);
+        } else {
+            $weekStart = \Carbon\Carbon::now()->startOfWeek(\Carbon\Carbon::SUNDAY);
+        }
+        $weekEnd = $weekStart->copy()->endOfWeek(\Carbon\Carbon::SATURDAY);
+
+        // Get availability slots
+        $availability = $teacher->availability()
+            ->where('is_available', true)
+            ->orderBy('day_of_week', 'asc')
+            ->orderBy('start_time', 'asc')
+            ->get();
+
+        // Get classes for the week
+        $classes = \App\Models\ClassInstance::where('teacher_id', $teacher->id)
+            ->whereBetween('class_date', [$weekStart->format('Y-m-d'), $weekEnd->format('Y-m-d')])
+            ->with(['student', 'course', 'timetable', 'package'])
+            ->orderBy('class_date', 'asc')
+            ->orderBy('start_time', 'asc')
+            ->get();
+
+        // Get trials for the week
+        $trials = \App\Models\TrialClass::where('teacher_id', $teacher->id)
+            ->whereBetween('trial_date', [$weekStart->format('Y-m-d'), $weekEnd->format('Y-m-d')])
+            ->with(['student', 'course'])
+            ->orderBy('trial_date', 'asc')
+            ->orderBy('start_time', 'asc')
+            ->get();
+
+        // Get active timetables that might generate classes for this week
+        $timetables = \App\Models\Timetable::where('teacher_id', $teacher->id)
+            ->where('status', 'active')
+            ->with(['student', 'course'])
+            ->get();
+
+        // Format response grouped by day of week
+        $schedule = [];
+        for ($day = 1; $day <= 7; $day++) {
+            $date = $weekStart->copy()->addDays($day - 1);
+            
+            // Get availability for this day
+            $dayAvailability = $availability->where('day_of_week', $day)->values();
+            
+            // Get classes for this date
+            $dayClasses = $classes->filter(function ($class) use ($date) {
+                return $class->class_date->format('Y-m-d') === $date->format('Y-m-d');
+            })->values();
+            
+            // Get trials for this date
+            $dayTrials = $trials->filter(function ($trial) use ($date) {
+                return $trial->trial_date->format('Y-m-d') === $date->format('Y-m-d');
+            })->values();
+            
+            $schedule[] = [
+                'day_of_week' => $day,
+                'date' => $date->format('Y-m-d'),
+                'date_formatted' => $date->format('Y-m-d'),
+                'availability' => $dayAvailability,
+                'classes' => $dayClasses,
+                'trials' => $dayTrials,
+            ];
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'teacher' => [
+                    'id' => $teacher->id,
+                    'name' => $teacher->full_name,
+                    'timezone' => $teacher->timezone ?? 'UTC',
+                ],
+                'week_start' => $weekStart->format('Y-m-d'),
+                'week_end' => $weekEnd->format('Y-m-d'),
+                'schedule' => $schedule,
+                'timetables' => $timetables, // Active timetables for reference
+            ],
+        ]);
+    }
+
+    /**
      * Remove the specified resource from storage.
      */
     public function destroy(string $id): JsonResponse

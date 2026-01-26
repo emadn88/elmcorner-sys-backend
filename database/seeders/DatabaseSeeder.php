@@ -24,6 +24,7 @@ class DatabaseSeeder extends Seeder
             TrialClassSeeder::class,
             CalendarTestSeeder::class,
             FinishedPackagesSeeder::class,
+            BillSeeder::class,
         ]);
     }
 }

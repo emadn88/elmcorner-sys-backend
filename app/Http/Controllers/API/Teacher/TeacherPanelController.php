@@ -675,6 +675,12 @@ class TeacherPanelController extends Controller
             ->orderBy('start_time', 'desc')
             ->get();
 
+        // Add can_enter_meet flag to each trial
+        $trials->transform(function ($trial) {
+            $trial->can_enter_meet = $this->classService->canEnterTrial($trial);
+            return $trial;
+        });
+
         // Calculate statistics
         $totalTrials = $trials->count();
         $pendingTrials = $trials->where('status', 'pending')->count();
@@ -723,6 +729,9 @@ class TeacherPanelController extends Controller
             ->with(['student', 'course', 'convertedPackage'])
             ->firstOrFail();
 
+        // Add can_enter_meet flag
+        $trial->can_enter_meet = $this->classService->canEnterTrial($trial);
+
         return response()->json([
             'status' => 'success',
             'data' => $trial,
@@ -769,6 +778,42 @@ class TeacherPanelController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Trial submitted for review successfully',
+            'data' => $trial->fresh()->load(['student', 'course']),
+        ]);
+    }
+
+    /**
+     * Enter trial (mark as entered)
+     */
+    public function enterTrial(int $id): JsonResponse
+    {
+        $teacher = $this->getCurrentTeacher();
+        
+        $trial = TrialClass::where('id', $id)
+            ->where('teacher_id', $teacher->id)
+            ->firstOrFail();
+
+        // Validate trial time has started
+        if (!$this->classService->canEnterTrial($trial)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Trial time has not started yet',
+            ], 400);
+        }
+
+        // Check if already entered
+        if ($trial->meet_link_used) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Trial already marked as entered',
+            ], 400);
+        }
+
+        $this->classService->enterTrial($trial);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Trial marked as entered successfully',
             'data' => $trial->fresh()->load(['student', 'course']),
         ]);
     }

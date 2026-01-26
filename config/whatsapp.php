@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'provider' => env('WHATSAPP_PROVIDER', 'twilio'), // twilio | meta
+    'provider' => env('WHATSAPP_PROVIDER', 'twilio'), // twilio | meta | wasender
 
     'twilio' => [
         'account_sid' => env('TWILIO_ACCOUNT_SID'),
@@ -13,6 +13,11 @@ return [
         'token' => env('META_WHATSAPP_TOKEN'),
         'phone_id' => env('META_WHATSAPP_PHONE_ID'),
         'business_account_id' => env('META_WHATSAPP_BUSINESS_ACCOUNT_ID'),
+    ],
+
+    'wasender' => [
+        'api_key' => env('WASENDER_API_KEY'),
+        'base_url' => env('WASENDER_BASE_URL', 'https://wasenderapi.com/api'),
     ],
 
     'templates' => [

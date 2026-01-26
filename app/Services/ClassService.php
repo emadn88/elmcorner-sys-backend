@@ -8,6 +8,7 @@ use App\Models\Bill;
 use App\Models\ActivityLog;
 use App\Models\Teacher;
 use App\Services\PackageService;
+use App\Services\BillingService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -15,10 +16,12 @@ use Carbon\Carbon;
 class ClassService
 {
     protected $packageService;
+    protected $billingService;
 
-    public function __construct(PackageService $packageService)
+    public function __construct(PackageService $packageService, BillingService $billingService)
     {
         $this->packageService = $packageService;
+        $this->billingService = $billingService;
     }
 
     /**
@@ -136,37 +139,26 @@ class ClassService
     }
 
     /**
-     * Create bill for a class instance.
-     * This is a placeholder that will be fully implemented in Phase 8.
+     * Create bill for a class instance using BillingService.
+     * Bills accumulate incrementally by package.
      */
     protected function createBillForClass(ClassInstance $class): void
     {
-        // Check if bill already exists
-        if ($class->bill) {
-            return;
+        try {
+            // Only create bills if class has a package
+            if (!$class->package_id) {
+                return;
+            }
+
+            // Use BillingService to create or update incremental bill
+            $this->billingService->createBillForClass($class);
+        } catch (\Exception $e) {
+            // Log error but don't fail the class status update
+            \Log::error('Failed to create bill for class', [
+                'class_id' => $class->id,
+                'error' => $e->getMessage(),
+            ]);
         }
-
-        // Get teacher hourly rate
-        $teacher = Teacher::find($class->teacher_id);
-        if (!$teacher) {
-            return;
-        }
-
-        // Calculate amount: (duration in hours) * hourly_rate
-        $hours = $class->duration / 60;
-        $amount = $hours * $teacher->hourly_rate;
-
-        // Create bill
-        Bill::create([
-            'class_id' => $class->id,
-            'student_id' => $class->student_id,
-            'teacher_id' => $class->teacher_id,
-            'duration' => $class->duration,
-            'amount' => $amount,
-            'currency' => $teacher->currency ?? 'USD',
-            'status' => 'pending',
-            'bill_date' => $class->class_date,
-        ]);
     }
 
     /**

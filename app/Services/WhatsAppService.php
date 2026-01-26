@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Services\WhatsApp\WhatsAppInterface;
 use App\Services\WhatsApp\Drivers\TwilioDriver;
 use App\Services\WhatsApp\Drivers\MetaDriver;
+use App\Services\WhatsApp\Drivers\WasenderDriver;
 use App\Services\WhatsApp\Drivers\NullDriver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -23,6 +24,9 @@ class WhatsAppService
                 break;
             case 'meta':
                 $this->driver = new MetaDriver();
+                break;
+            case 'wasender':
+                $this->driver = new WasenderDriver();
                 break;
             case 'null':
             default:

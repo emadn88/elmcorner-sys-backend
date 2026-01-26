@@ -1,0 +1,413 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\Bill;
+use App\Models\ClassInstance;
+use App\Models\Student;
+use App\Models\Package;
+use App\Models\Teacher;
+use App\Services\WhatsAppService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+
+class BillingService
+{
+    protected $whatsAppService;
+
+    public function __construct(WhatsAppService $whatsAppService)
+    {
+        $this->whatsAppService = $whatsAppService;
+    }
+
+    /**
+     * Create or update incremental bill for package
+     * Bills accumulate lessons from a package automatically
+     */
+    public function createBillForClass(ClassInstance $class): Bill
+    {
+        // Only create bills for attended or absent_student classes
+        if (!in_array($class->status, ['attended', 'absent_student'])) {
+            throw new \Exception('Cannot create bill for class with status: ' . $class->status);
+        }
+
+        // Check if package has existing pending bill
+        $existingBill = Bill::where('package_id', $class->package_id)
+            ->where('student_id', $class->student_id)
+            ->where('status', 'pending')
+            ->where('is_custom', false)
+            ->first();
+
+        $teacher = Teacher::findOrFail($class->teacher_id);
+        $durationHours = $class->duration / 60.0;
+        $amount = $durationHours * $teacher->hourly_rate;
+
+        if ($existingBill) {
+            // Add class to existing bill
+            $classIds = $existingBill->class_ids ?? [];
+            if (!in_array($class->id, $classIds)) {
+                $classIds[] = $class->id;
+                $existingBill->class_ids = $classIds;
+                $existingBill->total_hours = ($existingBill->total_hours ?? 0) + $durationHours;
+                $existingBill->amount = $existingBill->amount + $amount;
+                $existingBill->save();
+            }
+            return $existingBill->fresh();
+        } else {
+            // Create new bill with first class
+            return Bill::create([
+                'package_id' => $class->package_id,
+                'class_id' => $class->id,
+                'student_id' => $class->student_id,
+                'teacher_id' => $class->teacher_id,
+                'class_ids' => [$class->id],
+                'duration' => $class->duration,
+                'total_hours' => $durationHours,
+                'amount' => $amount,
+                'currency' => $teacher->currency ?? 'USD',
+                'status' => 'pending',
+                'bill_date' => $class->class_date,
+                'is_custom' => false,
+            ]);
+        }
+    }
+
+    /**
+     * Create custom bill (not linked to classes)
+     */
+    public function createCustomBill(array $data): Bill
+    {
+        $student = Student::findOrFail($data['student_id']);
+
+        return Bill::create([
+            'student_id' => $data['student_id'],
+            'teacher_id' => $data['teacher_id'] ?? null,
+            'package_id' => $data['package_id'] ?? null,
+            'amount' => $data['amount'],
+            'currency' => $data['currency'] ?? $student->currency ?? 'USD',
+            'status' => 'pending',
+            'bill_date' => $data['bill_date'] ?? now()->toDateString(),
+            'description' => $data['description'] ?? null,
+            'is_custom' => true,
+            'duration' => 0,
+            'total_hours' => 0,
+        ]);
+    }
+
+    /**
+     * Get bills grouped by month
+     */
+    public function getBillsByMonth(int $year, int $month, array $filters = []): array
+    {
+        $query = Bill::with(['student', 'teacher.user', 'package'])
+            ->whereYear('bill_date', $year)
+            ->whereMonth('bill_date', $month);
+
+        if (isset($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+
+        if (isset($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+
+        if (isset($filters['teacher_id'])) {
+            $query->where('teacher_id', $filters['teacher_id']);
+        }
+
+        $bills = $query->orderBy('bill_date', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        // Group by status
+        $paid = $bills->where('status', 'paid')->values();
+        $unpaid = $bills->whereIn('status', ['pending', 'sent'])->values();
+
+        return [
+            'paid' => $paid,
+            'unpaid' => $unpaid,
+            'all' => $bills,
+        ];
+    }
+
+    /**
+     * Get billing statistics for a month
+     */
+    public function getBillingStatistics(int $year, int $month): array
+    {
+        $startDate = Carbon::create($year, $month, 1)->startOfMonth();
+        $endDate = Carbon::create($year, $month, 1)->endOfMonth();
+
+        $bills = Bill::whereBetween('bill_date', [$startDate, $endDate])->get();
+
+        $dueBills = $bills->whereIn('status', ['pending', 'sent']);
+        $paidBills = $bills->where('status', 'paid');
+
+        // Group by currency for accurate totals
+        $dueByCurrency = $dueBills->groupBy('currency');
+        $paidByCurrency = $paidBills->groupBy('currency');
+
+        $dueTotal = [];
+        $paidTotal = [];
+
+        foreach ($dueByCurrency as $currency => $currencyBills) {
+            $dueTotal[$currency] = $currencyBills->sum('amount');
+        }
+
+        foreach ($paidByCurrency as $currency => $currencyBills) {
+            $paidTotal[$currency] = $currencyBills->sum('amount');
+        }
+
+        return [
+            'due' => [
+                'total' => $dueTotal,
+                'count' => $dueBills->count(),
+            ],
+            'paid' => [
+                'total' => $paidTotal,
+                'count' => $paidBills->count(),
+            ],
+            'unpaid' => [
+                'total' => $dueTotal,
+                'count' => $dueBills->count(),
+            ],
+        ];
+    }
+
+    /**
+     * Mark bill as paid
+     */
+    public function markAsPaid(int $billId, string $paymentMethod, ?string $paymentDate = null): Bill
+    {
+        $bill = Bill::findOrFail($billId);
+
+        $bill->update([
+            'status' => 'paid',
+            'payment_method' => $paymentMethod,
+            'payment_date' => $paymentDate ? Carbon::parse($paymentDate) : now(),
+        ]);
+
+        return $bill->fresh();
+    }
+
+    /**
+     * Generate payment token for public access
+     * Format: elmcorner + 5 alphanumeric characters (e.g., elmcorner4Hkvm)
+     */
+    public function generatePaymentToken(int $billId): string
+    {
+        $bill = Bill::findOrFail($billId);
+
+        if ($bill->payment_token) {
+            return $bill->payment_token;
+        }
+
+        // Generate 5-character alphanumeric token
+        $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $tokenSuffix = '';
+        
+        do {
+            $tokenSuffix = '';
+            for ($i = 0; $i < 5; $i++) {
+                $tokenSuffix .= $characters[random_int(0, strlen($characters) - 1)];
+            }
+            $token = 'elmcorner' . $tokenSuffix;
+        } while (Bill::where('payment_token', $token)->exists());
+
+        $bill->update(['payment_token' => $token]);
+
+        return $token;
+    }
+
+    /**
+     * Get bill by token for public payment page
+     * Accepts either full token (elmcornerXXXXX) or just the suffix (XXXXX)
+     */
+    public function getBillByToken(string $token): Bill
+    {
+        // If token doesn't start with 'elmcorner', prepend it
+        if (!str_starts_with($token, 'elmcorner')) {
+            $token = 'elmcorner' . $token;
+        }
+
+        $bill = Bill::with([
+            'student.family',
+            'teacher.user',
+            'package',
+        ])->where('payment_token', $token)->firstOrFail();
+
+        return $bill;
+    }
+
+    /**
+     * Send bill via WhatsApp using wa.me link
+     */
+    public function sendBillViaWhatsApp(int $billId): string
+    {
+        $bill = Bill::with('student')->findOrFail($billId);
+
+        if (!$bill->student->whatsapp) {
+            throw new \Exception('Student does not have a WhatsApp number');
+        }
+
+        // Generate payment token if not exists
+        if (!$bill->payment_token) {
+            $this->generatePaymentToken($billId);
+            $bill->refresh();
+        }
+
+        // Generate payment link - extract just the 5-character suffix
+        $tokenSuffix = str_replace('elmcorner', '', $bill->payment_token);
+        $paymentUrl = url("/payment/{$tokenSuffix}");
+        
+        // Format message
+        $message = $this->formatBillWhatsAppMessage($bill, $paymentUrl);
+
+        // Open wa.me link (frontend will handle this)
+        $phone = $bill->student->whatsapp;
+        // Remove any non-digit characters except +
+        $cleanPhone = preg_replace('/[^\d+]/', '', $phone);
+        if (!str_starts_with($cleanPhone, '+')) {
+            $cleanPhone = '+' . $cleanPhone;
+        }
+
+        $waMeUrl = "https://wa.me/{$cleanPhone}?text=" . urlencode($message);
+
+        // Update bill status and sent_at
+        $bill->update([
+            'status' => 'sent',
+            'sent_at' => now(),
+        ]);
+
+        return $waMeUrl;
+    }
+
+    /**
+     * Format WhatsApp message for bill
+     */
+    protected function formatBillWhatsAppMessage(Bill $bill, string $paymentUrl): string
+    {
+        $studentName = $bill->student->full_name;
+        $amount = number_format($bill->amount, 2);
+        $currency = $bill->currency;
+        $totalHours = $bill->total_hours ?? ($bill->duration / 60);
+
+        $message = "Hello {$studentName},\n\n";
+        $message .= "Your bill is ready for payment.\n\n";
+        $message .= "Total Hours: {$totalHours} hours\n";
+        $message .= "Total Amount: {$amount} {$currency}\n\n";
+        $message .= "Please click the link below to view and pay:\n";
+        $message .= $paymentUrl;
+
+        return $message;
+    }
+
+    /**
+     * Generate PDF for bill
+     */
+    public function generateBillPDF(int $billId): string
+    {
+        $bill = Bill::with([
+            'student.family',
+            'teacher.user',
+            'package',
+        ])->findOrFail($billId);
+
+        // Get classes included in this bill
+        $classes = [];
+        if ($bill->class_ids && is_array($bill->class_ids)) {
+            $classes = ClassInstance::with(['teacher.user', 'course'])
+                ->whereIn('id', $bill->class_ids)
+                ->orderBy('class_date', 'asc')
+                ->orderBy('start_time', 'asc')
+                ->get();
+        } elseif ($bill->class_id) {
+            $class = ClassInstance::with(['teacher.user', 'course'])->find($bill->class_id);
+            if ($class) {
+                $classes = collect([$class]);
+            }
+        }
+
+        // Store PDF
+        $filename = 'bill_' . $billId . '_' . now()->format('Y-m-d_H-i-s') . '.pdf';
+        $path = 'bills/' . $filename;
+        $fullPath = storage_path('app/' . $path);
+
+        // Ensure directory exists
+        if (!file_exists(dirname($fullPath))) {
+            mkdir(dirname($fullPath), 0755, true);
+        }
+
+        // Generate PDF using Spatie PDF
+        \Spatie\LaravelPdf\Facades\Pdf::view('bills.pdf', [
+            'bill' => $bill,
+            'classes' => $classes,
+        ])
+            ->format(\Spatie\LaravelPdf\Enums\Format::A4)
+            ->orientation(\Spatie\LaravelPdf\Enums\Orientation::Portrait)
+            ->save($fullPath);
+
+        return $path;
+    }
+
+    /**
+     * Get all bills with filters
+     */
+    public function getBills(array $filters = []): array
+    {
+        $query = Bill::with(['student', 'teacher.user', 'package']);
+
+        if (isset($filters['year']) && isset($filters['month'])) {
+            $query->whereYear('bill_date', (int)$filters['year'])
+                ->whereMonth('bill_date', (int)$filters['month']);
+        }
+
+        if (isset($filters['status'])) {
+            if (is_array($filters['status'])) {
+                $query->whereIn('status', $filters['status']);
+            } else {
+                $query->where('status', $filters['status']);
+            }
+        }
+
+        if (isset($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+
+        if (isset($filters['teacher_id'])) {
+            $query->where('teacher_id', $filters['teacher_id']);
+        }
+
+        if (isset($filters['is_custom'])) {
+            $query->where('is_custom', $filters['is_custom']);
+        }
+
+        $bills = $query->orderBy('bill_date', 'desc')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        // Ensure student relationship is loaded
+        $bills->loadMissing('student');
+
+        // Group by year/month
+        $grouped = $bills->groupBy(function ($bill) {
+            return Carbon::parse($bill->bill_date)->format('Y-m');
+        });
+
+        $result = [];
+        foreach ($grouped as $yearMonth => $monthBills) {
+            [$year, $month] = explode('-', $yearMonth);
+            $result[$yearMonth] = [
+                'year' => (int)$year,
+                'month' => (int)$month,
+                'bills' => $monthBills->values(),
+                'paid' => $monthBills->where('status', 'paid')->values(),
+                'unpaid' => $monthBills->whereIn('status', ['pending', 'sent'])->values(),
+            ];
+        }
+
+        return $result;
+    }
+}

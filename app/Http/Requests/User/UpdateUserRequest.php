@@ -1,10 +1,11 @@
 <?php
 
-namespace App\Http\Requests\Student;
+namespace App\Http\Requests\User;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
-class UpdateStudentRequest extends FormRequest
+class UpdateUserRequest extends FormRequest
 {
     /**
      * Determine if the user is authorized to make this request.
@@ -21,22 +22,16 @@ class UpdateStudentRequest extends FormRequest
      */
     public function rules(): array
     {
-        $studentId = $this->route('id');
-
+        $userId = $this->route('user') ?? $this->route('id');
+        
         return [
-            'family_id' => ['nullable', 'exists:families,id'],
-            'full_name' => ['required', 'string', 'max:255'],
-            'email' => ['nullable', 'email', 'max:255', 'unique:students,email,' . $studentId],
+            'name' => ['sometimes', 'required', 'string', 'max:255'],
+            'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users')->ignore($userId)],
+            'password' => ['sometimes', 'nullable', 'string', 'min:8', 'confirmed'],
+            'role' => ['sometimes', 'required', 'string', 'exists:roles,name'],
             'whatsapp' => ['nullable', 'string', 'max:20', 'regex:/^\+[1-9]\d{6,14}$/'],
-            'country' => ['nullable', 'string', 'max:255'],
-            'currency' => ['nullable', 'string', 'max:3'],
             'timezone' => ['nullable', 'string', 'max:255'],
-            'language' => ['nullable', 'in:ar,en,fr'],
-            'status' => ['required', 'in:active,paused,stopped'],
-            'type' => ['nullable', 'in:trial,confirmed'],
-            'notes' => ['nullable', 'string'],
-            'tags' => ['nullable', 'array'],
-            'tags.*' => ['string', 'max:255'],
+            'status' => ['sometimes', 'required', 'in:active,inactive'],
         ];
     }
 
@@ -44,6 +39,7 @@ class UpdateStudentRequest extends FormRequest
     {
         return [
             'whatsapp.regex' => 'The WhatsApp number must be in E.164 format (e.g., +966501234567) with country code.',
+            'role.exists' => 'The selected role does not exist.',
         ];
     }
 }

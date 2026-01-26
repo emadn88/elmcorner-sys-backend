@@ -9,23 +9,34 @@ class Bill extends Model
 {
     protected $fillable = [
         'class_id',
+        'package_id',
         'student_id',
         'teacher_id',
         'duration',
+        'total_hours',
         'amount',
         'currency',
         'status',
         'bill_date',
         'payment_date',
         'payment_method',
+        'payment_token',
+        'is_custom',
+        'sent_at',
+        'class_ids',
+        'description',
     ];
 
     protected $casts = [
         'duration' => 'integer',
+        'total_hours' => 'decimal:2',
         'amount' => 'decimal:2',
         'bill_date' => 'date',
         'payment_date' => 'date',
         'status' => 'string',
+        'is_custom' => 'boolean',
+        'sent_at' => 'datetime',
+        'class_ids' => 'array',
     ];
 
     /**
@@ -50,5 +61,13 @@ class Bill extends Model
     public function teacher(): BelongsTo
     {
         return $this->belongsTo(Teacher::class);
+    }
+
+    /**
+     * Get the package for the bill.
+     */
+    public function package(): BelongsTo
+    {
+        return $this->belongsTo(Package::class);
     }
 }

@@ -16,11 +16,11 @@ class ActivityLog extends Model
         'action',
         'description',
         'ip_address',
-        'created_at',
     ];
     
-    public $timestamps = false;
+    public $timestamps = true;
     const CREATED_AT = 'created_at';
+    const UPDATED_AT = null;
 
     /**
      * Get the user that performed the action.

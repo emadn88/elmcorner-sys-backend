@@ -18,6 +18,11 @@ class TrialClass extends Model
         'status',
         'converted_to_package_id',
         'notes',
+        'meet_link_used',
+        'meet_link_accessed_at',
+        'reminder_5min_before_sent',
+        'reminder_start_time_sent',
+        'reminder_5min_after_sent',
     ];
 
     protected $casts = [
@@ -25,6 +30,11 @@ class TrialClass extends Model
         'start_time' => 'string',
         'end_time' => 'string',
         'status' => 'string',
+        'meet_link_used' => 'boolean',
+        'meet_link_accessed_at' => 'datetime',
+        'reminder_5min_before_sent' => 'boolean',
+        'reminder_start_time_sent' => 'boolean',
+        'reminder_5min_after_sent' => 'boolean',
     ];
 
     /**

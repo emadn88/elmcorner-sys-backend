@@ -782,26 +782,24 @@ class ReportService
     {
         $report = Report::with(['student', 'teacher'])->findOrFail($reportId);
         
-        // Check if DomPDF is available
-        if (!class_exists('Barryvdh\DomPDF\Facade\Pdf')) {
-            throw new \Exception('PDF generation library (DomPDF) is not installed. Please run: composer require barryvdh/laravel-dompdf');
-        }
-        
-        // Generate PDF using DomPDF
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('reports.pdf', [
-            'report' => $report,
-            'content' => $report->content,
-        ]);
-        
-        // Set PDF options for RTL support
-        $pdf->setOption('enable-local-file-access', true);
-        $pdf->setPaper('a4', 'portrait');
-        
         // Store PDF
         $filename = 'report_' . $reportId . '_' . now()->format('Y-m-d_H-i-s') . '.pdf';
         $path = 'reports/' . $filename;
+        $fullPath = storage_path('app/' . $path);
         
-        Storage::put($path, $pdf->output());
+        // Ensure directory exists
+        if (!file_exists(dirname($fullPath))) {
+            mkdir(dirname($fullPath), 0755, true);
+        }
+        
+        // Generate PDF using Spatie PDF
+        \Spatie\LaravelPdf\Facades\Pdf::view('reports.pdf', [
+            'report' => $report,
+            'content' => $report->content,
+        ])
+            ->format(\Spatie\LaravelPdf\Enums\Format::A4)
+            ->orientation(\Spatie\LaravelPdf\Enums\Orientation::Portrait)
+            ->save($fullPath);
         
         // Update report with PDF path
         $report->update(['pdf_path' => $path]);

@@ -31,6 +31,9 @@ class ClassInstance extends Model
         'meet_link_used',
         'meet_link_accessed_at',
         'cancellation_request_status',
+        'reminder_5min_before_sent',
+        'reminder_start_time_sent',
+        'reminder_5min_after_sent',
     ];
 
     protected $casts = [
@@ -42,6 +45,9 @@ class ClassInstance extends Model
         'meet_link_used' => 'boolean',
         'meet_link_accessed_at' => 'datetime',
         'cancellation_request_status' => 'string',
+        'reminder_5min_before_sent' => 'boolean',
+        'reminder_start_time_sent' => 'boolean',
+        'reminder_5min_after_sent' => 'boolean',
     ];
 
     /**

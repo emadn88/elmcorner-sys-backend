@@ -28,6 +28,7 @@ class StoreTrialRequest extends FormRequest
             'new_student.country' => ['nullable', 'string', 'max:255'],
             'new_student.currency' => ['nullable', 'string', 'max:3'],
             'new_student.timezone' => ['nullable', 'string', 'max:255'],
+            'new_student.language' => ['nullable', 'in:ar,en,fr'],
             'teacher_id' => ['required', 'exists:teachers,id'],
             'course_id' => ['required', 'exists:courses,id'],
             'trial_date' => ['required', 'date', 'after_or_equal:today'],

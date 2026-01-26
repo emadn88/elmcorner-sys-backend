@@ -16,6 +16,7 @@ class Student extends Model
         'country',
         'currency',
         'timezone',
+        'language',
         'status',
         'type',
         'notes',

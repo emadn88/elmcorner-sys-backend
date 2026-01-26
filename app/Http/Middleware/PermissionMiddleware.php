@@ -32,8 +32,11 @@ class PermissionMiddleware
             $user->load('roles.permissions');
         }
 
-        // Check permission
-        if (!$user->can($permission)) {
+        // Get all user permissions directly (bypasses cache issues)
+        $userPermissions = $user->getAllPermissions()->pluck('name')->toArray();
+        
+        // Check if user has the required permission
+        if (!in_array($permission, $userPermissions)) {
             // Debug info (remove in production)
             \Log::info('Permission check failed', [
                 'user_id' => $user->id,

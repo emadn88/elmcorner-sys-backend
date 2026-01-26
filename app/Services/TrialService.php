@@ -70,24 +70,63 @@ class TrialService
      */
     public function createTrial(array $data): TrialClass
     {
+        // Check for time conflicts with existing trials and classes
+        $this->validateNoTimeConflict(
+            $data['teacher_id'],
+            $data['trial_date'],
+            $data['start_time'],
+            $data['end_time'],
+            null // No trial to exclude for new trials
+        );
+        
         // Handle new student creation
         if (isset($data['new_student']) && is_array($data['new_student'])) {
             $newStudentData = $data['new_student'];
+            
+            // Log incoming new student data
+            \Illuminate\Support\Facades\Log::info('Creating new student from trial', [
+                'new_student_data' => $newStudentData,
+                'language_received' => $newStudentData['language'] ?? 'not set',
+            ]);
+            
             $student = \App\Models\Student::create([
                 'full_name' => $newStudentData['full_name'],
                 'email' => $newStudentData['email'] ?? null,
                 'whatsapp' => $newStudentData['whatsapp'] ?? null,
                 'country' => $newStudentData['country'] ?? null,
                 'currency' => $newStudentData['currency'] ?? 'USD',
-                'timezone' => $newStudentData['timezone'] ?? 'UTC',
+                'timezone' => $newStudentData['timezone'] ?? 'Africa/Cairo',
+                'language' => $newStudentData['language'] ?? 'ar',
                 'status' => 'active',
                 'type' => 'trial', // Default to trial for new students
             ]);
+            
+            // Log created student
+            \Illuminate\Support\Facades\Log::info('New student created', [
+                'student_id' => $student->id,
+                'student_language' => $student->language,
+            ]);
+            
             $data['student_id'] = $student->id;
             unset($data['new_student']);
         }
 
         $trial = TrialClass::create($data);
+
+        // Load relationships for notification
+        $trial->load(['student', 'teacher.user', 'course']);
+
+        // Send WhatsApp notification to student and teacher
+        try {
+            $reminderService = app(\App\Services\ReminderService::class);
+            $reminderService->sendTrialCreationNotification($trial);
+        } catch (\Exception $e) {
+            // Log error but don't fail trial creation
+            \Illuminate\Support\Facades\Log::error('Failed to send trial creation notification', [
+                'trial_id' => $trial->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         // Log activity
         ActivityLog::create([
@@ -99,7 +138,7 @@ class TrialService
             'created_at' => now(),
         ]);
 
-        return $trial->load(['student', 'teacher', 'course']);
+        return $trial;
     }
 
     /**
@@ -112,6 +151,22 @@ class TrialService
         // Only allow editing pending trials
         if ($trial->status !== 'pending') {
             throw new \Exception('Only pending trials can be edited');
+        }
+
+        // Check for time conflicts (excluding current trial)
+        if (isset($data['teacher_id']) || isset($data['trial_date']) || isset($data['start_time']) || isset($data['end_time'])) {
+            $teacherId = $data['teacher_id'] ?? $trial->teacher_id;
+            $trialDate = $data['trial_date'] ?? $trial->trial_date->format('Y-m-d');
+            $startTime = $data['start_time'] ?? $trial->start_time;
+            $endTime = $data['end_time'] ?? $trial->end_time;
+            
+            $this->validateNoTimeConflict(
+                $teacherId,
+                $trialDate,
+                $startTime,
+                $endTime,
+                $trial->id // Exclude current trial from conflict check
+            );
         }
 
         $trial->update($data);
@@ -281,5 +336,70 @@ class TrialService
             ->first();
 
         return $lastPackage ? $lastPackage->round_number + 1 : 1;
+    }
+
+    /**
+     * Validate that there's no time conflict with existing trials or classes
+     */
+    protected function validateNoTimeConflict(int $teacherId, string $date, string $startTime, string $endTime, ?int $excludeTrialId = null): void
+    {
+        $trialDate = \Carbon\Carbon::parse($date)->format('Y-m-d');
+        
+        // Normalize times - ensure H:i format
+        $startTimeNormalized = strlen($startTime) === 5 ? $startTime : substr($startTime, 0, 5);
+        $endTimeNormalized = strlen($endTime) === 5 ? $endTime : substr($endTime, 0, 5);
+        
+        // Create datetime objects for comparison
+        $newStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$startTimeNormalized}");
+        $newEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$endTimeNormalized}");
+        
+        // Check for conflicting trials
+        $trialsQuery = TrialClass::where('teacher_id', $teacherId)
+            ->where('trial_date', $trialDate)
+            ->where('status', '!=', 'cancelled');
+        
+        // Exclude current trial if editing
+        if ($excludeTrialId !== null) {
+            $trialsQuery->where('id', '!=', $excludeTrialId);
+        }
+        
+        $trials = $trialsQuery->get();
+        
+        foreach ($trials as $trial) {
+            $trialStartTime = strlen($trial->start_time) === 5 ? $trial->start_time : substr($trial->start_time, 0, 5);
+            $trialEndTime = strlen($trial->end_time) === 5 ? $trial->end_time : substr($trial->end_time, 0, 5);
+            
+            $trialStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$trialStartTime}");
+            $trialEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$trialEndTime}");
+            
+            // Check for time overlap: new start < existing end AND new end > existing start
+            if ($newStart->lt($trialEnd) && $newEnd->gt($trialStart)) {
+                throw new \Exception('Teacher already has a trial scheduled at this time. Please choose a different time slot.');
+            }
+        }
+
+        // Check for conflicting classes
+        $classes = \App\Models\ClassInstance::where('teacher_id', $teacherId)
+            ->where('class_date', $trialDate)
+            ->where('status', '!=', 'cancelled')
+            ->get();
+        
+        foreach ($classes as $class) {
+            // ClassInstance has datetime fields, extract time portion
+            $classStartTime = $class->start_time instanceof \Carbon\Carbon 
+                ? $class->start_time->format('H:i')
+                : (is_string($class->start_time) ? substr($class->start_time, 11, 5) : '00:00');
+            $classEndTime = $class->end_time instanceof \Carbon\Carbon 
+                ? $class->end_time->format('H:i')
+                : (is_string($class->end_time) ? substr($class->end_time, 11, 5) : '00:00');
+            
+            $classStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$classStartTime}");
+            $classEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$trialDate} {$classEndTime}");
+            
+            // Check for time overlap
+            if ($newStart->lt($classEnd) && $newEnd->gt($classStart)) {
+                throw new \Exception('Teacher already has a class scheduled at this time. Please choose a different time slot.');
+            }
+        }
     }
 }

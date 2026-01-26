@@ -29,6 +29,7 @@ class StoreStudentRequest extends FormRequest
             'country' => ['nullable', 'string', 'max:255'],
             'currency' => ['nullable', 'string', 'max:3'],
             'timezone' => ['nullable', 'string', 'max:255'],
+            'language' => ['nullable', 'in:ar,en,fr'],
             'status' => ['required', 'in:active,paused,stopped'],
             'type' => ['nullable', 'in:trial,confirmed'],
             'notes' => ['nullable', 'string'],

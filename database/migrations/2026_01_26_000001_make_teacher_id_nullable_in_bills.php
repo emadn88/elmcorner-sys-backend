@@ -1,0 +1,30 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::table('bills', function (Blueprint $table) {
+            // Make teacher_id nullable for custom bills
+            $table->foreignId('teacher_id')->nullable()->change();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::table('bills', function (Blueprint $table) {
+            // Note: This might fail if there are NULL values
+            $table->foreignId('teacher_id')->nullable(false)->change();
+        });
+    }
+};

@@ -16,8 +16,12 @@ use App\Http\Controllers\API\Admin\FinancialController;
 use App\Http\Controllers\API\Admin\NotificationController;
 use App\Http\Controllers\API\Admin\ReportController;
 use App\Http\Controllers\API\Admin\AnalyticsController;
+use App\Http\Controllers\API\Admin\UserController;
+use App\Http\Controllers\API\Admin\RoleController;
+use App\Http\Controllers\API\Admin\BillingController;
 use App\Http\Controllers\API\Teacher\TeacherPanelController;
 use App\Http\Controllers\API\Support\SupportAlertController;
+use App\Http\Controllers\API\External\PaymentController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -38,6 +42,15 @@ Route::prefix('auth')->group(function () {
     Route::post('/refresh', [AuthController::class, 'refresh']);
 });
 
+// External/public routes (token-based, no auth required)
+Route::prefix('external')->group(function () {
+    Route::prefix('payment')->group(function () {
+        Route::get('/{token}', [PaymentController::class, 'show']);
+        Route::get('/{token}/pdf', [PaymentController::class, 'downloadPdf']);
+        Route::post('/{token}/process', [PaymentController::class, 'processPayment']);
+    });
+});
+
 // Protected routes - require authentication
 Route::middleware('auth:api')->group(function () {
     // Auth routes
@@ -56,7 +69,7 @@ Route::middleware('auth:api')->group(function () {
     });
 
     // Admin routes - require authentication only (permissions will be added later)
-    Route::prefix('admin')->middleware('auth:api')->group(function () {
+    Route::prefix('admin')->middleware(['auth:api'])->group(function () {
         // Students routes
         Route::get('/students/stats', [StudentController::class, 'stats']);
         Route::get('/students', [StudentController::class, 'index']);
@@ -80,6 +93,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/teachers/{id}', [TeacherController::class, 'show']);
         Route::get('/teachers/{id}/performance', [TeacherController::class, 'performance']);
         Route::get('/teachers/{id}/monthly-stats', [TeacherController::class, 'monthlyStats']);
+        Route::get('/teachers/{id}/weekly-schedule', [TeacherController::class, 'getWeeklySchedule']);
         Route::put('/teachers/{id}', [TeacherController::class, 'update']);
         Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
         Route::post('/teachers/{id}/courses', [TeacherController::class, 'assignCourses']);
@@ -195,12 +209,39 @@ Route::middleware('auth:api')->group(function () {
             Route::delete('/{id}', [ReportController::class, 'destroy']);
         });
         
+        // Billing routes
+        Route::prefix('bills')->group(function () {
+            Route::get('/', [BillingController::class, 'index']);
+            Route::get('/statistics', [BillingController::class, 'statistics']);
+            Route::post('/', [BillingController::class, 'store']);
+            Route::get('/{id}', [BillingController::class, 'show']);
+            Route::put('/{id}/mark-paid', [BillingController::class, 'markAsPaid']);
+            Route::post('/{id}/send-whatsapp', [BillingController::class, 'sendWhatsApp']);
+            Route::get('/{id}/pdf', [BillingController::class, 'downloadPdf']);
+            Route::post('/{id}/generate-token', [BillingController::class, 'generateToken']);
+        });
+        
         // Analytics routes
         Route::prefix('analytics')->group(function () {
             Route::get('/revenue', [AnalyticsController::class, 'revenue']);
             Route::get('/attendance', [AnalyticsController::class, 'attendance']);
             Route::get('/courses', [AnalyticsController::class, 'courses']);
             Route::get('/overview', [AnalyticsController::class, 'overview']);
+        });
+        
+        // User management routes - require manage_users permission
+        Route::middleware('permission:manage_users')->group(function () {
+            Route::apiResource('users', UserController::class);
+            Route::put('/users/{id}/status', [UserController::class, 'updateStatus']);
+        });
+        
+        // Role management routes - require manage_roles permission
+        Route::middleware('permission:manage_roles')->group(function () {
+            // These routes must come BEFORE the resource route to avoid conflicts
+            Route::get('/roles/permissions/all', [RoleController::class, 'getPermissions']);
+            Route::get('/roles/pages-permissions', [RoleController::class, 'getPagePermissions']);
+            Route::apiResource('roles', RoleController::class);
+            Route::post('/roles/{id}/permissions', [RoleController::class, 'syncPermissions']);
         });
         
         // More admin routes will be added in later phases
@@ -227,6 +268,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/trials', [TeacherPanelController::class, 'getTrials']);
         Route::get('/trials/{id}', [TeacherPanelController::class, 'getTrial']);
         Route::post('/trials/{id}/submit-review', [TeacherPanelController::class, 'submitTrialForReview']);
+        Route::post('/trials/{id}/enter-meet', [TeacherPanelController::class, 'enterTrial']);
         
         // Teacher availability routes
         Route::get('/availability', [TeacherPanelController::class, 'getAvailability']);
@@ -236,10 +278,6 @@ Route::middleware('auth:api')->group(function () {
     // Admin routes to get teacher availability
     Route::prefix('admin')->middleware('auth:api')->group(function () {
         Route::get('/teachers/{id}/availability', [TeacherController::class, 'getAvailability']);
-    });
-
-    // External/public routes (token-based, no auth required)
-    Route::prefix('external')->group(function () {
-        // External routes will be added in later phases
+        Route::get('/teachers/{id}/available-time-slots', [TeacherController::class, 'getAvailableTimeSlots']);
     });
 });

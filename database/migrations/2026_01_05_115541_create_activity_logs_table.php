@@ -18,7 +18,7 @@ return new class extends Migration
             $table->string('action');
             $table->text('description');
             $table->string('ip_address', 45)->nullable();
-            $table->timestamp('created_at');
+            $table->timestamp('created_at')->nullable();
             
             $table->index('user_id');
             $table->index('student_id');

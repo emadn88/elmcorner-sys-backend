@@ -1,6 +1,6 @@
 <?php
 
-return [
+$permissions = [
     'students' => [
         'manage_students',
         'view_students',
@@ -49,4 +49,38 @@ return [
         'manage_settings',
         'view_settings',
     ],
+    'users' => [
+        'manage_users',
+        'view_users',
+    ],
+    'roles' => [
+        'manage_roles',
+        'view_roles',
+    ],
 ];
+
+// Page to permission mapping for role configuration
+$pagePermissions = [
+    '/dashboard/students' => ['view_students'],
+    '/dashboard/families' => ['view_students'],
+    '/dashboard/leads' => ['view_students'],
+    '/dashboard/teachers' => ['view_teachers'],
+    '/dashboard/courses' => ['view_courses'],
+    '/dashboard/timetables' => ['view_timetables'],
+    '/dashboard/classes' => ['view_timetables'],
+    '/dashboard/trial-classes' => ['view_timetables'],
+    '/dashboard/packages' => ['view_students'],
+    '/dashboard/billing' => ['view_billing'],
+    '/dashboard/financials' => ['view_financials'],
+    '/dashboard/reports' => ['view_reports'],
+    '/dashboard/duties' => ['view_students'],
+    '/dashboard/activity' => ['view_students'],
+    '/dashboard/student-activity' => ['view_students'],
+    '/dashboard/salaries' => ['view_teachers'],
+    '/dashboard/notifications' => ['view_students'],
+    '/dashboard/users' => ['manage_users'],
+    '/dashboard/roles' => ['manage_roles'],
+    '/dashboard/settings' => ['view_settings'],
+];
+
+return $permissions;

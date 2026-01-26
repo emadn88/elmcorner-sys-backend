@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ClassInstance;
+use App\Models\TrialClass;
 use App\Models\Teacher;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -101,5 +102,28 @@ class TeacherClassService
             ->orderBy('class_date', 'asc')
             ->orderBy('start_time', 'asc')
             ->get();
+    }
+
+    /**
+     * Check if trial time has started or passed
+     */
+    public function canEnterTrial(TrialClass $trial): bool
+    {
+        $now = Carbon::now();
+        $trialDateTime = Carbon::parse($trial->trial_date->format('Y-m-d') . ' ' . $trial->start_time);
+        
+        return $now->greaterThanOrEqualTo($trialDateTime);
+    }
+
+    /**
+     * Mark trial as entered
+     */
+    public function enterTrial(TrialClass $trial): TrialClass
+    {
+        $trial->meet_link_used = true;
+        $trial->meet_link_accessed_at = now();
+        $trial->save();
+
+        return $trial;
     }
 }
