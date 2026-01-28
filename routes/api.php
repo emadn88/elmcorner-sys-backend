@@ -94,6 +94,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/teachers/{id}/performance', [TeacherController::class, 'performance']);
         Route::get('/teachers/{id}/monthly-stats', [TeacherController::class, 'monthlyStats']);
         Route::get('/teachers/{id}/weekly-schedule', [TeacherController::class, 'getWeeklySchedule']);
+        Route::get('/teachers/{id}/credentials', [TeacherController::class, 'getCredentials']);
+        Route::post('/teachers/{id}/send-credentials-whatsapp', [TeacherController::class, 'sendCredentialsWhatsApp']);
         Route::put('/teachers/{id}', [TeacherController::class, 'update']);
         Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
         Route::post('/teachers/{id}/courses', [TeacherController::class, 'assignCourses']);

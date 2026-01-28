@@ -35,6 +35,9 @@ class StudentController extends Controller
         $perPage = $request->input('per_page', 15);
         $students = $this->studentService->searchStudents($filters, $perPage);
 
+        // Load courses for each student
+        $students->getCollection()->load('courses');
+
         return response()->json([
             'status' => 'success',
             'data' => $students->items(),
@@ -70,7 +73,21 @@ class StudentController extends Controller
         if (!isset($data['type'])) {
             $data['type'] = 'trial';
         }
+        // Default to 'initial' if status is not provided
+        if (!isset($data['status'])) {
+            $data['status'] = 'initial';
+        }
+        
+        // Extract course_ids if present
+        $courseIds = $data['course_ids'] ?? null;
+        unset($data['course_ids']);
+        
         $student = Student::create($data);
+        
+        // Sync courses if provided
+        if ($courseIds !== null) {
+            $student->courses()->sync($courseIds);
+        }
 
         // Log activity
         ActivityLog::create([
@@ -85,7 +102,7 @@ class StudentController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Student created successfully',
-            'data' => $student->load('family'),
+            'data' => $student->load(['family', 'courses']),
         ], 201);
     }
 
@@ -95,6 +112,11 @@ class StudentController extends Controller
     public function show(string $id): JsonResponse
     {
         $profile = $this->studentService->getStudentProfile((int) $id);
+        
+        // Load courses if student exists
+        if (isset($profile['student'])) {
+            $profile['student']->load('courses');
+        }
 
         return response()->json([
             'status' => 'success',
@@ -110,7 +132,18 @@ class StudentController extends Controller
         $student = Student::findOrFail($id);
         $oldData = $student->toArray();
         
-        $student->update($request->validated());
+        $data = $request->validated();
+        
+        // Extract course_ids if present
+        $courseIds = $data['course_ids'] ?? null;
+        unset($data['course_ids']);
+        
+        $student->update($data);
+        
+        // Sync courses if provided
+        if ($courseIds !== null) {
+            $student->courses()->sync($courseIds);
+        }
 
         // Log activity
         ActivityLog::create([
@@ -125,7 +158,7 @@ class StudentController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Student updated successfully',
-            'data' => $student->fresh()->load('family'),
+            'data' => $student->fresh()->load(['family', 'courses']),
         ]);
     }
 

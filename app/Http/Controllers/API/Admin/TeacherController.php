@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\ActivityLog;
 use App\Models\TeacherAvailability;
 use App\Services\TeacherService;
+use App\Services\WhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -18,10 +19,12 @@ use Illuminate\Support\Facades\Hash;
 class TeacherController extends Controller
 {
     protected $teacherService;
+    protected $whatsappService;
 
-    public function __construct(TeacherService $teacherService)
+    public function __construct(TeacherService $teacherService, WhatsAppService $whatsappService)
     {
         $this->teacherService = $teacherService;
+        $this->whatsappService = $whatsappService;
     }
 
     /**
@@ -70,17 +73,25 @@ class TeacherController extends Controller
     {
         $validated = $request->validated();
         
+        // Get password or generate default
+        $password = $validated['password'] ?? 'password';
+        
         // Create user first
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
-            'password' => Hash::make($validated['password'] ?? 'password'), // Default password if not provided
+            'password' => Hash::make($password),
+            'plain_password' => $password, // Store plain password (encrypted)
             'role' => 'teacher',
             'whatsapp' => $validated['whatsapp'] ?? null,
             'timezone' => $validated['timezone'] ?? 'UTC',
             'status' => 'active',
         ]);
 
+        // Extract course_ids if present
+        $courseIds = $validated['course_ids'] ?? null;
+        unset($validated['course_ids']);
+        
         // Create teacher profile
         $teacher = Teacher::create([
             'user_id' => $user->id,
@@ -91,6 +102,11 @@ class TeacherController extends Controller
             'bio' => $validated['bio'] ?? null,
             'meet_link' => $validated['meet_link'] ?? null,
         ]);
+        
+        // Sync courses if provided
+        if ($courseIds !== null) {
+            $teacher->courses()->sync($courseIds);
+        }
 
         // Log activity
         ActivityLog::create([
@@ -156,6 +172,7 @@ class TeacherController extends Controller
             }
             if (isset($validated['password'])) {
                 $userData['password'] = Hash::make($validated['password']);
+                $userData['plain_password'] = $validated['password']; // Store plain password (encrypted)
             }
             if (isset($validated['whatsapp'])) {
                 $userData['whatsapp'] = $validated['whatsapp'];
@@ -187,8 +204,17 @@ class TeacherController extends Controller
             $teacherData['meet_link'] = $validated['meet_link'];
         }
         
+        // Extract course_ids if present
+        $courseIds = $validated['course_ids'] ?? null;
+        unset($validated['course_ids']);
+        
         if (!empty($teacherData)) {
             $teacher->update($teacherData);
+        }
+        
+        // Sync courses if provided
+        if ($courseIds !== null) {
+            $teacher->courses()->sync($courseIds);
         }
 
         // Log activity
@@ -470,5 +496,126 @@ class TeacherController extends Controller
             'status' => 'success',
             'data' => $stats,
         ]);
+    }
+
+    /**
+     * Send teacher credentials via WhatsApp
+     */
+    public function sendCredentialsWhatsApp(string $id): JsonResponse
+    {
+        try {
+            $teacher = Teacher::with('user')->findOrFail($id);
+            
+            if (!$teacher->user) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Teacher user not found',
+                ], 404);
+            }
+
+            $user = $teacher->user;
+            
+            if (!$user->whatsapp) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Teacher WhatsApp number not found',
+                ], 400);
+            }
+
+            // Get system link from config
+            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $systemLink = rtrim($frontendUrl, '/') . '/login';
+
+            // Get credentials
+            $email = $user->email;
+            $password = $user->plain_password ?? 'Not available';
+
+            // Build modern Islamic-style message
+            $message = "السلام عليكم ورحمة الله وبركاته\n\n";
+            $message .= "أهلاً وسهلاً {$user->name} 👋\n\n";
+            $message .= "نرحب بك في منصة *Elm Corner* 🎓\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📋 *بيانات الدخول لحسابك:*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📧 *البريد الإلكتروني:*\n";
+            $message .= "{$email}\n\n";
+            $message .= "🔐 *كلمة المرور:*\n";
+            $message .= "{$password}\n\n";
+            $message .= "🔗 *رابط النظام:*\n";
+            $message .= "{$systemLink}\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📞 *لديك استفسار أو تحتاج مساعدة؟*\n\n";
+            $message .= "تواصل مع فريق الدعم عبر واتساب:\n";
+            $message .= "➕ *+1 (940) 618-2531*\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "نتمنى لك تجربة مميزة معنا 🌟\n\n";
+            $message .= "بالتوفيق والنجاح ✨";
+
+            // Send WhatsApp message
+            $success = $this->whatsappService->sendMessage($user->whatsapp, $message);
+
+            if (!$success) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to send WhatsApp message',
+                ], 500);
+            }
+
+            // Log activity
+            ActivityLog::create([
+                'user_id' => Auth::id(),
+                'action' => 'send_credentials',
+                'description' => "Sent credentials via WhatsApp to teacher {$user->name}",
+                'ip_address' => request()->ip(),
+                'created_at' => now(),
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Credentials sent via WhatsApp successfully',
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get teacher credentials (email and password)
+     */
+    public function getCredentials(string $id): JsonResponse
+    {
+        try {
+            $teacher = Teacher::with('user')->findOrFail($id);
+            
+            if (!$teacher->user) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Teacher user not found',
+                ], 404);
+            }
+
+            $user = $teacher->user;
+            
+            // Get system link from config
+            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $systemLink = rtrim($frontendUrl, '/') . '/login';
+
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'email' => $user->email,
+                    'password' => $user->plain_password ?? 'Not available',
+                    'system_link' => $systemLink,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
     }
 }

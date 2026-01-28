@@ -35,7 +35,9 @@ class StoreTeacherRequest extends FormRequest
             'timezone' => ['nullable', 'string', 'max:255'],
             'status' => ['required', 'in:active,inactive'],
             'bio' => ['nullable', 'string'],
-            'meet_link' => ['required', 'string', 'url', 'max:500'],
+            'meet_link' => ['nullable', 'string', 'url', 'max:500'],
+            'course_ids' => ['nullable', 'array'],
+            'course_ids.*' => ['exists:courses,id'],
         ];
     }
 }

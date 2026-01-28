@@ -24,6 +24,7 @@ class User extends Authenticatable implements JWTSubject
         'name',
         'email',
         'password',
+        'plain_password',
         'role',
         'whatsapp',
         'timezone',
@@ -39,6 +40,7 @@ class User extends Authenticatable implements JWTSubject
      */
     protected $hidden = [
         'password',
+        'plain_password',
         'remember_token',
     ];
 
@@ -84,5 +86,32 @@ class User extends Authenticatable implements JWTSubject
     public function teacher(): HasOne
     {
         return $this->hasOne(Teacher::class);
+    }
+
+    /**
+     * Set plain password (encrypted)
+     */
+    public function setPlainPasswordAttribute($value): void
+    {
+        if ($value !== null) {
+            $this->attributes['plain_password'] = encrypt($value);
+        } else {
+            $this->attributes['plain_password'] = null;
+        }
+    }
+
+    /**
+     * Get plain password (decrypted)
+     */
+    public function getPlainPasswordAttribute($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        try {
+            return decrypt($value);
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 }

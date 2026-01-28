@@ -32,11 +32,13 @@ class UpdateStudentRequest extends FormRequest
             'currency' => ['nullable', 'string', 'max:3'],
             'timezone' => ['nullable', 'string', 'max:255'],
             'language' => ['nullable', 'in:ar,en,fr'],
-            'status' => ['required', 'in:active,paused,stopped'],
+            'status' => ['required', 'in:initial,active,paused,stopped'],
             'type' => ['nullable', 'in:trial,confirmed'],
             'notes' => ['nullable', 'string'],
             'tags' => ['nullable', 'array'],
             'tags.*' => ['string', 'max:255'],
+            'course_ids' => ['nullable', 'array'],
+            'course_ids.*' => ['exists:courses,id'],
         ];
     }
 
