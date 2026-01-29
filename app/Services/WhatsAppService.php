@@ -45,6 +45,9 @@ class WhatsAppService
         // Log to database
         $this->logMessage($phone, 'reminder', $success ? 'sent' : 'failed', $success ? null : 'Failed to send message');
 
+        // Send copy to monitoring number if enabled
+        $this->sendMonitoringCopy($phone, $message, $success);
+
         return $success;
     }
 
@@ -102,5 +105,39 @@ class WhatsAppService
         ];
 
         return $mapping[$templateName] ?? 'reminder';
+    }
+
+    /**
+     * Send a copy of the message to monitoring number
+     */
+    protected function sendMonitoringCopy(string $originalPhone, string $message, bool $success): void
+    {
+        try {
+            $monitoringEnabled = config('whatsapp.monitoring.enabled', true);
+            $monitoringPhone = config('whatsapp.monitoring.phone');
+
+            if (!$monitoringEnabled || !$monitoringPhone) {
+                return;
+            }
+
+            // Format monitoring message
+            $status = $success ? '✅ تم الإرسال' : '❌ فشل الإرسال';
+            $monitoringMessage = "📱 نسخة من الرسالة المرسلة:\n\n";
+            $monitoringMessage .= "👤 إلى: {$originalPhone}\n";
+            $monitoringMessage .= "📊 الحالة: {$status}\n";
+            $monitoringMessage .= "⏰ الوقت: " . now()->format('Y-m-d H:i:s') . "\n\n";
+            $monitoringMessage .= "📝 محتوى الرسالة:\n";
+            $monitoringMessage .= "─────────────────\n";
+            $monitoringMessage .= $message;
+            $monitoringMessage .= "\n─────────────────";
+
+            // Send to monitoring number (don't log this as it might cause infinite loop)
+            $this->driver->sendMessage($monitoringPhone, $monitoringMessage);
+        } catch (\Exception $e) {
+            // Silently fail monitoring to not break main message sending
+            Log::warning('Failed to send monitoring copy', [
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
