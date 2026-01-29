@@ -65,15 +65,16 @@ class SendWhatsAppReminders extends Command
     {
         $sentCount = 0;
 
-        // 5 minutes before
+        // 5 minutes before - check if trial starts in 5 minutes (within current minute)
         $fiveMinutesBefore = $now->copy()->addMinutes(5);
         $trials5MinBefore = TrialClass::where('status', 'pending')
             ->where('reminder_5min_before_sent', false)
             ->whereDate('trial_date', $fiveMinutesBefore->format('Y-m-d'))
             ->get()
             ->filter(function ($trial) use ($fiveMinutesBefore) {
-                $startTime = Carbon::parse($trial->start_time);
-                return $startTime->format('H:i:s') === $fiveMinutesBefore->format('H:i:s');
+                $trialDateTime = Carbon::parse($trial->trial_date)->setTimeFromTimeString($trial->start_time);
+                // Check if trial starts within the current minute (5 minutes from now)
+                return $trialDateTime->format('Y-m-d H:i') === $fiveMinutesBefore->format('Y-m-d H:i');
             });
 
         foreach ($trials5MinBefore as $trial) {
@@ -84,14 +85,15 @@ class SendWhatsAppReminders extends Command
             }
         }
 
-        // At start time
+        // At start time - check if trial starts now (within current minute)
         $trialsStartTime = TrialClass::where('status', 'pending')
             ->where('reminder_start_time_sent', false)
             ->whereDate('trial_date', $now->format('Y-m-d'))
             ->get()
             ->filter(function ($trial) use ($now) {
-                $startTime = Carbon::parse($trial->start_time);
-                return $startTime->format('H:i:s') === $now->format('H:i:s');
+                $trialDateTime = Carbon::parse($trial->trial_date)->setTimeFromTimeString($trial->start_time);
+                // Check if trial starts within the current minute
+                return $trialDateTime->format('Y-m-d H:i') === $now->format('Y-m-d H:i');
             });
 
         foreach ($trialsStartTime as $trial) {
@@ -102,7 +104,7 @@ class SendWhatsAppReminders extends Command
             }
         }
 
-        // 5 minutes after (only if not entered)
+        // 5 minutes after (only if not entered) - check if trial started 5 minutes ago (within current minute)
         $fiveMinutesAgo = $now->copy()->subMinutes(5);
         $trials5MinAfter = TrialClass::where('status', 'pending')
             ->where('reminder_5min_after_sent', false)
@@ -110,8 +112,9 @@ class SendWhatsAppReminders extends Command
             ->whereDate('trial_date', $fiveMinutesAgo->format('Y-m-d'))
             ->get()
             ->filter(function ($trial) use ($fiveMinutesAgo) {
-                $startTime = Carbon::parse($trial->start_time);
-                return $startTime->format('H:i:s') === $fiveMinutesAgo->format('H:i:s');
+                $trialDateTime = Carbon::parse($trial->trial_date)->setTimeFromTimeString($trial->start_time);
+                // Check if trial started within the current minute (5 minutes ago)
+                return $trialDateTime->format('Y-m-d H:i') === $fiveMinutesAgo->format('Y-m-d H:i');
             });
 
         foreach ($trials5MinAfter as $trial) {
@@ -132,7 +135,7 @@ class SendWhatsAppReminders extends Command
     {
         $sentCount = 0;
 
-        // 5 minutes before
+        // 5 minutes before - check if class starts in 5 minutes (within current minute)
         $fiveMinutesBefore = $now->copy()->addMinutes(5);
         $classes5MinBefore = ClassInstance::where('status', 'pending')
             ->where('reminder_5min_before_sent', false)
@@ -142,7 +145,9 @@ class SendWhatsAppReminders extends Command
                 $startTime = is_string($class->start_time) 
                     ? Carbon::parse($class->start_time) 
                     : Carbon::parse($class->start_time);
-                return $startTime->format('H:i:s') === $fiveMinutesBefore->format('H:i:s');
+                $classDateTime = Carbon::parse($class->class_date)->setTimeFromTimeString($startTime->format('H:i:s'));
+                // Check if class starts within the current minute (5 minutes from now)
+                return $classDateTime->format('Y-m-d H:i') === $fiveMinutesBefore->format('Y-m-d H:i');
             });
 
         foreach ($classes5MinBefore as $class) {
@@ -153,7 +158,7 @@ class SendWhatsAppReminders extends Command
             }
         }
 
-        // At start time
+        // At start time - check if class starts now (within current minute)
         $classesStartTime = ClassInstance::where('status', 'pending')
             ->where('reminder_start_time_sent', false)
             ->whereDate('class_date', $now->format('Y-m-d'))
@@ -162,7 +167,9 @@ class SendWhatsAppReminders extends Command
                 $startTime = is_string($class->start_time) 
                     ? Carbon::parse($class->start_time) 
                     : Carbon::parse($class->start_time);
-                return $startTime->format('H:i:s') === $now->format('H:i:s');
+                $classDateTime = Carbon::parse($class->class_date)->setTimeFromTimeString($startTime->format('H:i:s'));
+                // Check if class starts within the current minute
+                return $classDateTime->format('Y-m-d H:i') === $now->format('Y-m-d H:i');
             });
 
         foreach ($classesStartTime as $class) {
@@ -173,7 +180,7 @@ class SendWhatsAppReminders extends Command
             }
         }
 
-        // 5 minutes after (only if not entered)
+        // 5 minutes after (only if not entered) - check if class started 5 minutes ago (within current minute)
         $fiveMinutesAgo = $now->copy()->subMinutes(5);
         $classes5MinAfter = ClassInstance::where('status', 'pending')
             ->where('reminder_5min_after_sent', false)
@@ -184,7 +191,9 @@ class SendWhatsAppReminders extends Command
                 $startTime = is_string($class->start_time) 
                     ? Carbon::parse($class->start_time) 
                     : Carbon::parse($class->start_time);
-                return $startTime->format('H:i:s') === $fiveMinutesAgo->format('H:i:s');
+                $classDateTime = Carbon::parse($class->class_date)->setTimeFromTimeString($startTime->format('H:i:s'));
+                // Check if class started within the current minute (5 minutes ago)
+                return $classDateTime->format('Y-m-d H:i') === $fiveMinutesAgo->format('Y-m-d H:i');
             });
 
         foreach ($classes5MinAfter as $class) {
