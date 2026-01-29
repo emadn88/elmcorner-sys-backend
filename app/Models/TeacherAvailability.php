@@ -26,6 +26,98 @@ class TeacherAvailability extends Model
     ];
 
     /**
+     * Get start_time formatted as H:i
+     */
+    public function getStartTimeAttribute($value): string
+    {
+        if (empty($value)) {
+            return '';
+        }
+        
+        // If already in H:i format, return as is
+        if (preg_match('/^\d{2}:\d{2}$/', $value)) {
+            return $value;
+        }
+        
+        // Parse and format to H:i
+        try {
+            return \Carbon\Carbon::parse($value)->format('H:i');
+        } catch (\Exception $e) {
+            return $value;
+        }
+    }
+
+    /**
+     * Get end_time formatted as H:i
+     */
+    public function getEndTimeAttribute($value): string
+    {
+        if (empty($value)) {
+            return '';
+        }
+        
+        // If already in H:i format, return as is
+        if (preg_match('/^\d{2}:\d{2}$/', $value)) {
+            return $value;
+        }
+        
+        // Parse and format to H:i
+        try {
+            return \Carbon\Carbon::parse($value)->format('H:i');
+        } catch (\Exception $e) {
+            return $value;
+        }
+    }
+
+    /**
+     * Set start_time and normalize to H:i format
+     */
+    public function setStartTimeAttribute($value): void
+    {
+        if (empty($value)) {
+            $this->attributes['start_time'] = null;
+            return;
+        }
+        
+        // If already in H:i format, use as is
+        if (preg_match('/^\d{2}:\d{2}$/', $value)) {
+            $this->attributes['start_time'] = $value;
+            return;
+        }
+        
+        // Parse and format to H:i
+        try {
+            $this->attributes['start_time'] = \Carbon\Carbon::parse($value)->format('H:i');
+        } catch (\Exception $e) {
+            $this->attributes['start_time'] = $value;
+        }
+    }
+
+    /**
+     * Set end_time and normalize to H:i format
+     */
+    public function setEndTimeAttribute($value): void
+    {
+        if (empty($value)) {
+            $this->attributes['end_time'] = null;
+            return;
+        }
+        
+        // If already in H:i format, use as is
+        if (preg_match('/^\d{2}:\d{2}$/', $value)) {
+            $this->attributes['end_time'] = $value;
+            return;
+        }
+        
+        // Parse and format to H:i
+        try {
+            $this->attributes['end_time'] = \Carbon\Carbon::parse($value)->format('H:i');
+        } catch (\Exception $e) {
+            $this->attributes['end_time'] = $value;
+        }
+    }
+
+    /**
      * Get the teacher that owns the availability.
      */
     public function teacher(): BelongsTo
