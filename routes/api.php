@@ -281,5 +281,6 @@ Route::middleware('auth:api')->group(function () {
     Route::prefix('admin')->middleware('auth:api')->group(function () {
         Route::get('/teachers/{id}/availability', [TeacherController::class, 'getAvailability']);
         Route::get('/teachers/{id}/available-time-slots', [TeacherController::class, 'getAvailableTimeSlots']);
+        Route::get('/teachers/available', [TeacherController::class, 'findAvailableTeachers']);
     });
 });

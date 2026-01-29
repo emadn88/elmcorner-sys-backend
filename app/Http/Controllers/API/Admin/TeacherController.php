@@ -499,6 +499,134 @@ class TeacherController extends Controller
     }
 
     /**
+     * Find all available teachers for a specific date and time range
+     */
+    public function findAvailableTeachers(Request $request): JsonResponse
+    {
+        $request->validate([
+            'date' => 'required|date',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+        ]);
+
+        $date = \Carbon\Carbon::parse($request->input('date'));
+        $startTime = $request->input('start_time');
+        $endTime = $request->input('end_time');
+        $dayOfWeek = $date->dayOfWeek == 0 ? 7 : $date->dayOfWeek; // Convert Sunday (0) to 7
+        $dateStr = $date->format('Y-m-d');
+
+        // Get all active teachers
+        $teachers = Teacher::where('status', 'active')
+            ->with(['user', 'availability'])
+            ->get();
+
+        $availableTeachers = [];
+
+        foreach ($teachers as $teacher) {
+            // Check if teacher has availability for this day of week
+            $availabilitySlots = $teacher->availability()
+                ->where('is_available', true)
+                ->where('day_of_week', $dayOfWeek)
+                ->get();
+
+            if ($availabilitySlots->isEmpty()) {
+                continue; // Teacher has no availability for this day
+            }
+
+            // Check if the requested time overlaps with any availability slot
+            $hasMatchingAvailability = false;
+            foreach ($availabilitySlots as $slot) {
+                $slotStartTime = strlen($slot->start_time) === 5 ? $slot->start_time : substr($slot->start_time, 0, 5);
+                $slotEndTime = strlen($slot->end_time) === 5 ? $slot->end_time : substr($slot->end_time, 0, 5);
+
+                $slotStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$slotStartTime}");
+                $slotEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$slotEndTime}");
+                $requestStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$startTime}");
+                $requestEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$endTime}");
+
+                // Check if requested time is within availability slot
+                if ($requestStart->gte($slotStart) && $requestEnd->lte($slotEnd)) {
+                    $hasMatchingAvailability = true;
+                    break;
+                }
+            }
+
+            if (!$hasMatchingAvailability) {
+                continue; // Teacher doesn't have availability for this time
+            }
+
+            // Check for conflicts with booked classes
+            $bookedClasses = \App\Models\ClassInstance::where('teacher_id', $teacher->id)
+                ->where('class_date', $dateStr)
+                ->where('status', '!=', 'cancelled')
+                ->get();
+
+            $hasConflict = false;
+            foreach ($bookedClasses as $class) {
+                $classStartTime = $class->start_time instanceof \Carbon\Carbon 
+                    ? $class->start_time->format('H:i')
+                    : (is_string($class->start_time) ? substr($class->start_time, 11, 5) : '00:00');
+                $classEndTime = $class->end_time instanceof \Carbon\Carbon 
+                    ? $class->end_time->format('H:i')
+                    : (is_string($class->end_time) ? substr($class->end_time, 11, 5) : '00:00');
+
+                $classStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$classStartTime}");
+                $classEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$classEndTime}");
+                $requestStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$startTime}");
+                $requestEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$endTime}");
+
+                // Check for overlap
+                if ($requestStart->lt($classEnd) && $requestEnd->gt($classStart)) {
+                    $hasConflict = true;
+                    break;
+                }
+            }
+
+            if ($hasConflict) {
+                continue; // Teacher has a conflict
+            }
+
+            // Check for conflicts with booked trials
+            $bookedTrials = \App\Models\TrialClass::where('teacher_id', $teacher->id)
+                ->where('trial_date', $dateStr)
+                ->where('status', '!=', 'cancelled')
+                ->get();
+
+            foreach ($bookedTrials as $trial) {
+                $trialStartTime = strlen($trial->start_time) === 5 ? $trial->start_time : substr($trial->start_time, 0, 5);
+                $trialEndTime = strlen($trial->end_time) === 5 ? $trial->end_time : substr($trial->end_time, 0, 5);
+
+                $trialStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$trialStartTime}");
+                $trialEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$trialEndTime}");
+                $requestStart = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$startTime}");
+                $requestEnd = \Carbon\Carbon::createFromFormat('Y-m-d H:i', "{$dateStr} {$endTime}");
+
+                // Check for overlap
+                if ($requestStart->lt($trialEnd) && $requestEnd->gt($trialStart)) {
+                    $hasConflict = true;
+                    break;
+                }
+            }
+
+            if (!$hasConflict) {
+                $availableTeachers[] = [
+                    'id' => $teacher->id,
+                    'name' => $teacher->user->name ?? 'N/A',
+                    'email' => $teacher->user->email ?? 'N/A',
+                    'hourly_rate' => $teacher->hourly_rate,
+                    'currency' => $teacher->currency,
+                    'status' => $teacher->status,
+                ];
+            }
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $availableTeachers,
+        ]);
+    }
+
+    /**
      * Send teacher credentials via WhatsApp
      */
     public function sendCredentialsWhatsApp(string $id): JsonResponse
