@@ -70,16 +70,7 @@ class TrialService
      */
     public function createTrial(array $data): TrialClass
     {
-        // Check for time conflicts with existing trials and classes
-        $this->validateNoTimeConflict(
-            $data['teacher_id'],
-            $data['trial_date'],
-            $data['start_time'],
-            $data['end_time'],
-            null // No trial to exclude for new trials
-        );
-        
-        // Handle new student creation
+        // Handle new student creation first to get student timezone
         if (isset($data['new_student']) && is_array($data['new_student'])) {
             $newStudentData = $data['new_student'];
             
@@ -110,6 +101,66 @@ class TrialService
             $data['student_id'] = $student->id;
             unset($data['new_student']);
         }
+
+        // Get student and teacher timezones
+        $student = \App\Models\Student::find($data['student_id']);
+        $teacher = \App\Models\Teacher::find($data['teacher_id']);
+        $studentTimezone = $student->timezone ?? 'Africa/Cairo';
+        $teacherTimezone = $teacher->timezone ?? 'Africa/Cairo';
+
+        // Convert student and teacher times to Egypt timezone for storage
+        // Use teacher time for the main trial_date, start_time, end_time (for conflict checking)
+        if (isset($data['teacher_date']) && isset($data['teacher_start_time'])) {
+            $teacherDateTime = \Carbon\Carbon::createFromFormat(
+                'Y-m-d H:i',
+                "{$data['teacher_date']} {$data['teacher_start_time']}",
+                $teacherTimezone
+            );
+            $teacherDateTime->setTimezone('Africa/Cairo');
+            
+            $data['trial_date'] = $teacherDateTime->format('Y-m-d');
+            $data['start_time'] = $teacherDateTime->format('H:i');
+            
+            if (isset($data['teacher_end_time'])) {
+                $teacherEndDateTime = \Carbon\Carbon::createFromFormat(
+                    'Y-m-d H:i',
+                    "{$data['teacher_date']} {$data['teacher_end_time']}",
+                    $teacherTimezone
+                );
+                $teacherEndDateTime->setTimezone('Africa/Cairo');
+                $data['end_time'] = $teacherEndDateTime->format('H:i');
+            }
+        } elseif (isset($data['student_date']) && isset($data['student_start_time'])) {
+            // Fallback: use student time if teacher time not provided
+            $studentDateTime = \Carbon\Carbon::createFromFormat(
+                'Y-m-d H:i',
+                "{$data['student_date']} {$data['student_start_time']}",
+                $studentTimezone
+            );
+            $studentDateTime->setTimezone('Africa/Cairo');
+            
+            $data['trial_date'] = $studentDateTime->format('Y-m-d');
+            $data['start_time'] = $studentDateTime->format('H:i');
+            
+            if (isset($data['student_end_time'])) {
+                $studentEndDateTime = \Carbon\Carbon::createFromFormat(
+                    'Y-m-d H:i',
+                    "{$data['student_date']} {$data['student_end_time']}",
+                    $studentTimezone
+                );
+                $studentEndDateTime->setTimezone('Africa/Cairo');
+                $data['end_time'] = $studentEndDateTime->format('H:i');
+            }
+        }
+
+        // Check for time conflicts with existing trials and classes (using converted Egypt time)
+        $this->validateNoTimeConflict(
+            $data['teacher_id'],
+            $data['trial_date'],
+            $data['start_time'],
+            $data['end_time'],
+            null // No trial to exclude for new trials
+        );
 
         $trial = TrialClass::create($data);
 

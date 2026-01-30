@@ -31,9 +31,15 @@ class StoreTrialRequest extends FormRequest
             'new_student.language' => ['nullable', 'in:ar,en,fr'],
             'teacher_id' => ['required', 'exists:teachers,id'],
             'course_id' => ['required', 'exists:courses,id'],
-            'trial_date' => ['required', 'date', 'after_or_equal:today'],
-            'start_time' => ['required', 'date_format:H:i'],
-            'end_time' => ['required', 'date_format:H:i', 'after:start_time'],
+            'trial_date' => ['nullable', 'date', 'after_or_equal:today'],
+            'start_time' => ['nullable', 'date_format:H:i'],
+            'end_time' => ['nullable', 'date_format:H:i'],
+            'student_date' => ['required', 'date', 'after_or_equal:today'],
+            'student_start_time' => ['required', 'date_format:H:i'],
+            'student_end_time' => ['required', 'date_format:H:i', 'after:student_start_time'],
+            'teacher_date' => ['required', 'date', 'after_or_equal:today'],
+            'teacher_start_time' => ['required', 'date_format:H:i'],
+            'teacher_end_time' => ['required', 'date_format:H:i', 'after:teacher_start_time'],
             'notes' => ['nullable', 'string'],
         ];
     }

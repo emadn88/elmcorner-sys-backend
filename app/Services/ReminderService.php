@@ -296,64 +296,68 @@ class ReminderService
         $teacherName = $trial->teacher->user->name ?? '';
         $country = $trial->student->country ?? '';
         
-        // Get student timezone (default to Egypt if not set)
-        $studentTimezone = $trial->student->timezone ?? 'Africa/Cairo';
-        
-        // Convert times to student timezone
-        $trialDate = $trial->trial_date->format('Y-m-d');
-        
-        // Parse start time - handle both H:i and H:i:s formats
-        if (is_string($trial->start_time)) {
-            $startTime = $trial->start_time;
+        // Use stored student times directly (already in student timezone)
+        if ($trial->student_date && $trial->student_start_time && $trial->student_end_time) {
+            $date = $trial->student_date instanceof \Carbon\Carbon 
+                ? $trial->student_date->format('Y-m-d')
+                : $trial->student_date;
+            
+            // Parse and format times
+            $startTime = is_string($trial->student_start_time) 
+                ? $trial->student_start_time 
+                : Carbon::parse($trial->student_start_time)->format('H:i');
+            $endTime = is_string($trial->student_end_time) 
+                ? $trial->student_end_time 
+                : Carbon::parse($trial->student_end_time)->format('H:i');
+            
+            // Normalize to H:i format
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTime, $matches)) {
+                $startTime = sprintf('%02d:%02d:%02d', $matches[1], $matches[2], 0);
+            }
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTime, $matches)) {
+                $endTime = sprintf('%02d:%02d:%02d', $matches[1], $matches[2], 0);
+            }
+            
+            try {
+                $startDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$date} {$startTime}");
+                $endDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$date} {$endTime}");
+            } catch (\Exception $e) {
+                $startDateTime = Carbon::parse("{$date} {$startTime}");
+                $endDateTime = Carbon::parse("{$date} {$endTime}");
+            }
+            
+            $time = $startDateTime->format('g:i A');
+            $endTimeFormatted = $endDateTime->format('g:i A');
         } else {
-            $startTime = Carbon::parse($trial->start_time)->format('H:i');
+            // Fallback: convert from stored Egypt time (backward compatibility)
+            $studentTimezone = $trial->student->timezone ?? 'Africa/Cairo';
+            $trialDate = $trial->trial_date->format('Y-m-d');
+            
+            $startTime = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
+            $endTime = is_string($trial->end_time) ? $trial->end_time : Carbon::parse($trial->end_time)->format('H:i');
+            
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTime, $matches)) {
+                $startTime = sprintf('%02d:%02d:00', $matches[1], $matches[2]);
+            }
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTime, $matches)) {
+                $endTime = sprintf('%02d:%02d:00', $matches[1], $matches[2]);
+            }
+            
+            try {
+                $startDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$trialDate} {$startTime}", 'Africa/Cairo');
+                $endDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$trialDate} {$endTime}", 'Africa/Cairo');
+            } catch (\Exception $e) {
+                $startDateTime = Carbon::parse("{$trialDate} {$startTime}", 'Africa/Cairo');
+                $endDateTime = Carbon::parse("{$trialDate} {$endTime}", 'Africa/Cairo');
+            }
+            
+            $startDateTime->setTimezone($studentTimezone);
+            $endDateTime->setTimezone($studentTimezone);
+            
+            $date = $startDateTime->format('Y-m-d');
+            $time = $startDateTime->format('g:i A');
+            $endTimeFormatted = $endDateTime->format('g:i A');
         }
-        
-        // Parse end time - handle both H:i and H:i:s formats
-        if (is_string($trial->end_time)) {
-            $endTime = $trial->end_time;
-        } else {
-            $endTime = Carbon::parse($trial->end_time)->format('H:i');
-        }
-        
-        // Normalize time format to H:i:s
-        if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTime, $matches)) {
-            $startTime = sprintf('%02d:%02d:00', $matches[1], $matches[2]);
-        } elseif (preg_match('/^(\d{1,2}):(\d{2}):(\d{2})$/', $startTime, $matches)) {
-            $startTime = sprintf('%02d:%02d:%02d', $matches[1], $matches[2], $matches[3]);
-        }
-        
-        if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTime, $matches)) {
-            $endTime = sprintf('%02d:%02d:00', $matches[1], $matches[2]);
-        } elseif (preg_match('/^(\d{1,2}):(\d{2}):(\d{2})$/', $endTime, $matches)) {
-            $endTime = sprintf('%02d:%02d:%02d', $matches[1], $matches[2], $matches[3]);
-        }
-        
-        // Create datetime in Egypt timezone (default) and convert to student timezone
-        try {
-            $startDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$trialDate} {$startTime}", 'Africa/Cairo');
-            $endDateTime = Carbon::createFromFormat('Y-m-d H:i:s', "{$trialDate} {$endTime}", 'Africa/Cairo');
-        } catch (\Exception $e) {
-            Log::error('Failed to parse trial times', [
-                'trial_id' => $trial->id,
-                'start_time' => $trial->start_time,
-                'end_time' => $trial->end_time,
-                'parsed_start' => $startTime,
-                'parsed_end' => $endTime,
-                'error' => $e->getMessage(),
-            ]);
-            // Fallback: use current timezone
-            $startDateTime = Carbon::parse("{$trialDate} {$startTime}", 'Africa/Cairo');
-            $endDateTime = Carbon::parse("{$trialDate} {$endTime}", 'Africa/Cairo');
-        }
-        
-        $startDateTime->setTimezone($studentTimezone);
-        $endDateTime->setTimezone($studentTimezone);
-        
-        $date = $startDateTime->format('Y-m-d');
-        // Convert to 12-hour format with AM/PM
-        $time = $startDateTime->format('g:i A');
-        $endTimeFormatted = $endDateTime->format('g:i A');
         
         // Normalize language value (trim and lowercase)
         $language = strtolower(trim($language));
@@ -393,36 +397,70 @@ class ReminderService
         $studentName = $trial->student->full_name ?? 'الطالب';
         $teacherName = $trial->teacher->user->name ?? 'المعلم';
         
-        // Format date nicely
-        $dateObj = Carbon::parse($trial->trial_date);
-        $dayName = $this->getArabicDayName($dateObj->dayOfWeek);
-        $monthName = $this->getArabicMonthName($dateObj->month);
-        $date = "{$dayName}، {$dateObj->day} {$monthName} {$dateObj->year}";
-        
-        // Parse times and convert to 12-hour format
-        $startTimeRaw = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
-        $endTimeRaw = is_string($trial->end_time) ? $trial->end_time : Carbon::parse($trial->end_time)->format('H:i');
-        
-        // Normalize time format to H:i if needed
-        if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTimeRaw, $matches)) {
-            $startTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
+        // Use stored teacher times directly (already in teacher timezone)
+        if ($trial->teacher_date && $trial->teacher_start_time && $trial->teacher_end_time) {
+            $dateObj = $trial->teacher_date instanceof \Carbon\Carbon 
+                ? $trial->teacher_date 
+                : Carbon::parse($trial->teacher_date);
+            
+            $dayName = $this->getArabicDayName($dateObj->dayOfWeek);
+            $monthName = $this->getArabicMonthName($dateObj->month);
+            $date = "{$dayName}، {$dateObj->day} {$monthName} {$dateObj->year}";
+            
+            // Parse and format times
+            $startTimeRaw = is_string($trial->teacher_start_time) 
+                ? $trial->teacher_start_time 
+                : Carbon::parse($trial->teacher_start_time)->format('H:i');
+            $endTimeRaw = is_string($trial->teacher_end_time) 
+                ? $trial->teacher_end_time 
+                : Carbon::parse($trial->teacher_end_time)->format('H:i');
+            
+            // Normalize to H:i format
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTimeRaw, $matches)) {
+                $startTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
+            }
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTimeRaw, $matches)) {
+                $endTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
+            }
+            
+            try {
+                $startDateTime = Carbon::createFromFormat('H:i', $startTimeRaw);
+                $endDateTime = Carbon::createFromFormat('H:i', $endTimeRaw);
+            } catch (\Exception $e) {
+                $startDateTime = Carbon::parse($startTimeRaw);
+                $endDateTime = Carbon::parse($endTimeRaw);
+            }
+            
+            $time = $startDateTime->format('g:i A');
+            $endTime = $endDateTime->format('g:i A');
+        } else {
+            // Fallback: use stored Egypt time (backward compatibility)
+            $dateObj = Carbon::parse($trial->trial_date);
+            $dayName = $this->getArabicDayName($dateObj->dayOfWeek);
+            $monthName = $this->getArabicMonthName($dateObj->month);
+            $date = "{$dayName}، {$dateObj->day} {$monthName} {$dateObj->year}";
+            
+            $startTimeRaw = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
+            $endTimeRaw = is_string($trial->end_time) ? $trial->end_time : Carbon::parse($trial->end_time)->format('H:i');
+            
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $startTimeRaw, $matches)) {
+                $startTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
+            }
+            if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTimeRaw, $matches)) {
+                $endTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
+            }
+            
+            try {
+                $startDateTime = Carbon::createFromFormat('H:i', $startTimeRaw);
+                $endDateTime = Carbon::createFromFormat('H:i', $endTimeRaw);
+            } catch (\Exception $e) {
+                $startDateTime = Carbon::parse($startTimeRaw);
+                $endDateTime = Carbon::parse($endTimeRaw);
+            }
+            
+            $time = $startDateTime->format('g:i A');
+            $endTime = $endDateTime->format('g:i A');
         }
-        if (preg_match('/^(\d{1,2}):(\d{2})$/', $endTimeRaw, $matches)) {
-            $endTimeRaw = sprintf('%02d:%02d', $matches[1], $matches[2]);
-        }
-        
-        // Convert to 12-hour format with AM/PM
-        try {
-            $startDateTime = Carbon::createFromFormat('H:i', $startTimeRaw);
-            $endDateTime = Carbon::createFromFormat('H:i', $endTimeRaw);
-        } catch (\Exception $e) {
-            // Fallback: try parsing directly
-            $startDateTime = Carbon::parse($startTimeRaw);
-            $endDateTime = Carbon::parse($endTimeRaw);
-        }
-        
-        $time = $startDateTime->format('g:i A');
-        $endTime = $endDateTime->format('g:i A');
         
         // Get trial notes/description
         $trialNotes = $trial->notes ?? '';
