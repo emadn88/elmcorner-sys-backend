@@ -17,7 +17,7 @@ class TrialService
      */
     public function getTrials(array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
-        $query = TrialClass::with(['student', 'teacher', 'course', 'convertedPackage']);
+        $query = TrialClass::with(['student', 'teacher.user', 'course', 'convertedPackage']);
 
         // Apply filters
         if (isset($filters['status']) && $filters['status'] !== 'all') {
@@ -61,7 +61,7 @@ class TrialService
      */
     public function getTrial(int $id): TrialClass
     {
-        return TrialClass::with(['student', 'teacher', 'course', 'convertedPackage'])
+        return TrialClass::with(['student', 'teacher.user', 'course', 'convertedPackage'])
             ->findOrFail($id);
     }
 
@@ -181,7 +181,7 @@ class TrialService
             'created_at' => now(),
         ]);
 
-        return $trial->fresh()->load(['student', 'teacher', 'course']);
+        return $trial->fresh()->load(['student', 'teacher.user', 'course']);
     }
 
     /**
@@ -212,7 +212,7 @@ class TrialService
             'created_at' => now(),
         ]);
 
-        return $trial->fresh()->load(['student', 'teacher', 'course']);
+        return $trial->fresh()->load(['student', 'teacher.user', 'course']);
     }
 
     /**
@@ -281,9 +281,9 @@ class TrialService
             ]);
 
             return [
-                'trial' => $trial->fresh()->load(['student', 'teacher', 'course', 'convertedPackage']),
+                'trial' => $trial->fresh()->load(['student', 'teacher.user', 'course', 'convertedPackage']),
                 'package' => $package->load('student'),
-                'timetable' => $timetable->load(['student', 'teacher', 'course']),
+                'timetable' => $timetable->load(['student', 'teacher.user', 'course']),
             ];
         });
     }

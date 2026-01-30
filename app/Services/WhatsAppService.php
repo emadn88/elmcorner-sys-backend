@@ -64,6 +64,10 @@ class WhatsAppService
         // Log to database
         $this->logMessage($phone, $messageType, $success ? 'sent' : 'failed', $success ? null : 'Failed to send template message');
 
+        // Send copy to monitoring number if enabled
+        $formattedMessage = $this->formatTemplateMessage($templateName, $variables);
+        $this->sendMonitoringCopy($phone, $formattedMessage, $success);
+
         return $success;
     }
 
@@ -105,6 +109,25 @@ class WhatsAppService
         ];
 
         return $mapping[$templateName] ?? 'reminder';
+    }
+
+    /**
+     * Format template message for monitoring
+     */
+    protected function formatTemplateMessage(string $templateName, array $variables): string
+    {
+        $template = config("whatsapp.templates.{$templateName}");
+
+        if (!$template) {
+            return "Template: {$templateName}";
+        }
+
+        $message = $template;
+        foreach ($variables as $key => $value) {
+            $message = str_replace("{{$key}}", $value, $message);
+        }
+
+        return $message;
     }
 
     /**

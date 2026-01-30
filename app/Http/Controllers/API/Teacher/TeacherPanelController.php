@@ -647,7 +647,7 @@ class TeacherPanelController extends Controller
         $teacher = $this->getCurrentTeacher();
 
         $query = TrialClass::where('teacher_id', $teacher->id)
-            ->with(['student', 'course']);
+            ->with(['student', 'teacher.user', 'course']);
 
         // Filter by status
         if ($request->has('status') && $request->input('status') !== 'all') {

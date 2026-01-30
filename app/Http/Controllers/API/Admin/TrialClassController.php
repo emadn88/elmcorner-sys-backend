@@ -195,7 +195,7 @@ class TrialClassController extends Controller
             return response()->json([
                 'status' => 'success',
                 'message' => "Trial {$request->input('action')}d successfully",
-                'data' => $trial->fresh()->load(['student', 'teacher', 'course']),
+                'data' => $trial->fresh()->load(['student', 'teacher.user', 'course']),
             ]);
         } catch (\Exception $e) {
             return response()->json([
