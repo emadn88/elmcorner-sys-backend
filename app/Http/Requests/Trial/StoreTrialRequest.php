@@ -20,15 +20,7 @@ class StoreTrialRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'student_id' => ['required_without:new_student', 'exists:students,id'],
-            'new_student' => ['required_without:student_id', 'array'],
-            'new_student.full_name' => ['required_with:new_student', 'string', 'max:255'],
-            'new_student.email' => ['nullable', 'email', 'max:255'],
-            'new_student.whatsapp' => ['nullable', 'string', 'max:20'],
-            'new_student.country' => ['nullable', 'string', 'max:255'],
-            'new_student.currency' => ['nullable', 'string', 'max:3'],
-            'new_student.timezone' => ['nullable', 'string', 'max:255'],
-            'new_student.language' => ['nullable', 'in:ar,en,fr'],
+            'student_id' => ['required', 'exists:students,id'],
             'teacher_id' => ['required', 'exists:teachers,id'],
             'course_id' => ['required', 'exists:courses,id'],
             'trial_date' => ['nullable', 'date', 'after_or_equal:today'],
@@ -50,10 +42,8 @@ class StoreTrialRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'student_id.required_without' => 'Either select an existing student or create a new one',
+            'student_id.required' => 'Please select a student',
             'student_id.exists' => 'Selected student does not exist',
-            'new_student.required_without' => 'Either select an existing student or create a new one',
-            'new_student.full_name.required_with' => 'Student name is required',
             'teacher_id.required' => 'Teacher is required',
             'teacher_id.exists' => 'Selected teacher does not exist',
             'course_id.required' => 'Course is required',
