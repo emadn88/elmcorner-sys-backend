@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bill #{{ $bill->id }}</title>
+    <title>Bill #{{ $bill->id }} - {{ $bill->student->full_name }}</title>
     <style>
         * {
             margin: 0;
@@ -12,99 +12,89 @@
         }
         body {
             font-family: 'Arial', 'Helvetica', sans-serif;
-            font-size: 12px;
-            line-height: 1.6;
+            font-size: 11px;
+            line-height: 1.5;
             color: #333;
             direction: ltr;
+            padding: 20px;
         }
         .header {
             text-align: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 3px solid #3b82f6;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #059669;
         }
         .header h1 {
-            color: #3b82f6;
-            font-size: 24px;
-            margin-bottom: 10px;
+            color: #059669;
+            font-size: 28px;
+            margin-bottom: 5px;
             font-weight: bold;
         }
         .header p {
             color: #666;
-            font-size: 14px;
+            font-size: 12px;
         }
-        .bill-info {
-            display: table;
-            width: 100%;
-            margin-bottom: 25px;
-        }
-        .bill-info-row {
-            display: table-row;
-        }
-        .bill-info-cell {
-            display: table-cell;
-            padding: 8px 15px;
-            vertical-align: top;
-        }
-        .bill-info-label {
-            font-weight: bold;
-            color: #555;
-            width: 150px;
-        }
-        .bill-info-value {
-            color: #333;
-        }
-        .section {
-            margin-bottom: 25px;
-        }
-        .section-title {
-            background-color: #f3f4f6;
-            padding: 10px 15px;
-            font-weight: bold;
-            font-size: 16px;
-            color: #1f2937;
-            margin-bottom: 15px;
-            border-left: 4px solid #3b82f6;
-        }
-        .student-info {
-            background-color: #f9fafb;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-        .student-info h3 {
-            color: #3b82f6;
-            margin-bottom: 10px;
-            font-size: 18px;
-        }
-        .student-info p {
-            margin: 5px 0;
-            color: #666;
-        }
-        table {
+        .main-table {
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 20px;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
-        table thead {
-            background-color: #3b82f6;
+        .main-table th {
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
             color: white;
-        }
-        table th {
-            padding: 12px;
+            padding: 12px 15px;
             text-align: left;
             font-weight: bold;
-            font-size: 13px;
+            font-size: 12px;
+            border: 1px solid #047857;
         }
-        table td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #e5e7eb;
+        .main-table td {
+            padding: 10px 15px;
+            border: 1px solid #e5e7eb;
+            vertical-align: top;
         }
-        table tbody tr:hover {
+        .main-table tr:nth-child(even) {
             background-color: #f9fafb;
         }
-        table tbody tr:last-child td {
-            border-bottom: none;
+        .label-cell {
+            font-weight: bold;
+            color: #374151;
+            width: 180px;
+            background-color: #f3f4f6;
+        }
+        .value-cell {
+            color: #111827;
+        }
+        .classes-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .classes-table thead {
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            color: white;
+        }
+        .classes-table th {
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: bold;
+            font-size: 11px;
+            border: 1px solid #047857;
+        }
+        .classes-table td {
+            padding: 8px 12px;
+            border: 1px solid #e5e7eb;
+            font-size: 10px;
+        }
+        .classes-table tbody tr:nth-child(even) {
+            background-color: #f9fafb;
+        }
+        .classes-table tbody tr:hover {
+            background-color: #f3f4f6;
         }
         .text-right {
             text-align: right;
@@ -112,49 +102,34 @@
         .text-center {
             text-align: center;
         }
-        .summary {
-            background-color: #f9fafb;
+        .summary-box {
+            margin-top: 25px;
             padding: 20px;
-            border-radius: 5px;
-            margin-top: 20px;
+            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+            border: 2px solid #059669;
+            border-radius: 8px;
         }
         .summary-row {
             display: flex;
             justify-content: space-between;
             padding: 8px 0;
-            border-bottom: 1px solid #e5e7eb;
+            font-size: 12px;
         }
-        .summary-row:last-child {
-            border-bottom: none;
-            font-weight: bold;
-            font-size: 16px;
-            color: #3b82f6;
+        .summary-row.total {
             margin-top: 10px;
             padding-top: 15px;
-            border-top: 2px solid #3b82f6;
-        }
-        .summary-label {
-            font-weight: 600;
-            color: #555;
-        }
-        .summary-value {
-            font-weight: 600;
-            color: #333;
-        }
-        .footer {
-            margin-top: 40px;
-            padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
-            text-align: center;
-            color: #666;
-            font-size: 11px;
+            border-top: 2px solid #059669;
+            font-weight: bold;
+            font-size: 16px;
+            color: #059669;
         }
         .status-badge {
             display: inline-block;
-            padding: 4px 12px;
+            padding: 4px 10px;
             border-radius: 12px;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: bold;
+            text-transform: uppercase;
         }
         .status-pending {
             background-color: #fef3c7;
@@ -168,126 +143,128 @@
             background-color: #d1fae5;
             color: #065f46;
         }
-        .custom-bill-note {
-            background-color: #fef3c7;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            border-left: 4px solid #f59e0b;
+        .footer {
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid #e5e7eb;
+            text-align: center;
+            color: #666;
+            font-size: 10px;
         }
-        .custom-bill-note p {
-            margin: 0;
+        .note-box {
+            margin: 15px 0;
+            padding: 12px;
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            border-radius: 4px;
+            font-size: 11px;
             color: #92400e;
-            font-weight: 500;
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>INVOICE / BILL</h1>
-        <p>Bill #{{ $bill->id }} | Generated on {{ now()->format('F d, Y') }}</p>
+        <h1>ElmCorner Academy - Invoice</h1>
+        <p>Generated: {{ now()->format('F d, Y') }}</p>
     </div>
 
-    <div class="bill-info">
-        <div class="bill-info-row">
-            <div class="bill-info-cell bill-info-label">Bill Date:</div>
-            <div class="bill-info-cell bill-info-value">{{ $bill->bill_date->format('F d, Y') }}</div>
-        </div>
-        <div class="bill-info-row">
-            <div class="bill-info-cell bill-info-label">Status:</div>
-            <div class="bill-info-cell bill-info-value">
-                <span class="status-badge status-{{ $bill->status }}">{{ strtoupper($bill->status) }}</span>
-            </div>
-        </div>
-        @if($bill->payment_date)
-        <div class="bill-info-row">
-            <div class="bill-info-cell bill-info-label">Payment Date:</div>
-            <div class="bill-info-cell bill-info-value">{{ $bill->payment_date->format('F d, Y') }}</div>
-        </div>
-        @endif
-        @if($bill->payment_method)
-        <div class="bill-info-row">
-            <div class="bill-info-cell bill-info-label">Payment Method:</div>
-            <div class="bill-info-cell bill-info-value">{{ $bill->payment_method }}</div>
-        </div>
-        @endif
-    </div>
-
-    <div class="student-info">
-        <h3>Student Information</h3>
-        <p><strong>Name:</strong> {{ $bill->student->full_name }}</p>
-        @if($bill->student->email)
-        <p><strong>Email:</strong> {{ $bill->student->email }}</p>
-        @endif
+    <table class="main-table">
+        <tr>
+            <th colspan="2" style="text-align: center;">Student & Bill Information</th>
+        </tr>
+        <tr>
+            <td class="label-cell">Student Name</td>
+            <td class="value-cell"><strong>{{ $bill->student->full_name }}</strong></td>
+        </tr>
         @if($bill->student->whatsapp)
-        <p><strong>WhatsApp:</strong> {{ $bill->student->whatsapp }}</p>
+        <tr>
+            <td class="label-cell">WhatsApp</td>
+            <td class="value-cell">{{ $bill->student->whatsapp }}</td>
+        </tr>
         @endif
-        @if($bill->student->family)
-        <p><strong>Family:</strong> {{ $bill->student->family->name }}</p>
-        @endif
-    </div>
+        <tr>
+            <td class="label-cell">Billing Period</td>
+            <td class="value-cell">
+                @if($classes && $classes->count() > 0)
+                    @php
+                        $dates = $classes->pluck('class_date')->sort();
+                        $startDate = $dates->first();
+                        $endDate = $dates->last();
+                    @endphp
+                    {{ $startDate->format('M d, Y') }} to {{ $endDate->format('M d, Y') }}
+                @else
+                    {{ $bill->bill_date->format('M d, Y') }}
+                @endif
+            </td>
+        </tr>
+    </table>
 
     @if($bill->is_custom && $bill->description)
-    <div class="custom-bill-note">
-        <p><strong>Note:</strong> {{ $bill->description }}</p>
+    <div class="note-box">
+        <strong>Note:</strong> {{ $bill->description }}
     </div>
     @endif
 
     @if($classes && $classes->count() > 0)
-    <div class="section">
-        <div class="section-title">Lesson Breakdown</div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Duration</th>
-                    <th>Teacher</th>
-                    <th>Course</th>
-                    <th class="text-right">Cost</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach($classes as $class)
-                <tr>
-                    <td>{{ $class->class_date->format('M d, Y') }}</td>
-                    <td>{{ \Carbon\Carbon::parse($class->start_time)->format('h:i A') }}</td>
-                    <td>{{ $class->duration }} min ({{ number_format($class->duration / 60, 2) }} hrs)</td>
-                    <td>{{ $class->teacher->user->name ?? 'N/A' }}</td>
-                    <td>{{ $class->course->name ?? 'N/A' }}</td>
-                    <td class="text-right">
-                        @php
-                            $hours = $class->duration / 60;
-                            $cost = $hours * ($class->teacher->hourly_rate ?? 0);
-                        @endphp
-                        {{ number_format($cost, 2) }} {{ $bill->currency }}
-                    </td>
-                </tr>
-                @endforeach
-            </tbody>
-        </table>
-    </div>
+    <table class="classes-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Duration</th>
+                <th>Teacher</th>
+                <th>Course</th>
+                <th class="text-right">Hourly Rate</th>
+                <th class="text-right">Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach($classes as $index => $class)
+            @php
+                $hours = $class->duration / 60;
+                $hourlyRate = $class->teacher->hourly_rate ?? 0;
+                $cost = $hours * $hourlyRate;
+            @endphp
+            <tr>
+                <td class="text-center">{{ $index + 1 }}</td>
+                <td>{{ $class->class_date->format('M d, Y') }}</td>
+                <td>{{ \Carbon\Carbon::parse($class->start_time)->format('h:i A') }}</td>
+                <td>{{ number_format($hours, 2) }} hrs</td>
+                <td>{{ $class->teacher->user->name ?? 'N/A' }}</td>
+                <td>{{ $class->course->name ?? 'N/A' }}</td>
+                <td class="text-right">{{ number_format($hourlyRate, 2) }} {{ $bill->currency }}</td>
+                <td class="text-right"><strong>{{ number_format($cost, 2) }} {{ $bill->currency }}</strong></td>
+            </tr>
+            @endforeach
+        </tbody>
+    </table>
     @endif
 
-    <div class="summary">
+    <div class="summary-box">
         <div class="summary-row">
-            <span class="summary-label">Total Hours:</span>
-            <span class="summary-value">{{ number_format($bill->total_hours ?? ($bill->duration / 60), 2) }} hours</span>
+            <span>Total Classes:</span>
+            <span><strong>{{ $classes ? $classes->count() : 1 }}</strong></span>
+        </div>
+        <div class="summary-row">
+            <span>Total Hours:</span>
+            <span><strong>{{ number_format($bill->total_hours ?? ($bill->duration / 60), 2) }} hours</strong></span>
         </div>
         @if($bill->is_custom)
         <div class="summary-row">
-            <span class="summary-label">Bill Type:</span>
-            <span class="summary-value">Custom Bill</span>
+            <span>Bill Type:</span>
+            <span><strong>Custom Bill</strong></span>
         </div>
         @endif
-        <div class="summary-row">
-            <span class="summary-label">Total Amount:</span>
-            <span class="summary-value">{{ number_format($bill->amount, 2) }} {{ $bill->currency }}</span>
+        <div class="summary-row total">
+            <span>Total Amount:</span>
+            <span>{{ number_format($bill->amount, 2) }} {{ $bill->currency }}</span>
         </div>
     </div>
 
     <div class="footer">
-        <p>Thank you for your business!</p>
+        <p><strong>ElmCorner Academy</strong></p>
+        <p>Thank you for trusting us</p>
         <p>This is an automated invoice generated by ElmCorner Management System</p>
     </div>
 </body>

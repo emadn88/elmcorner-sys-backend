@@ -1,0 +1,621 @@
+<?php
+
+namespace App\Services;
+
+use App\Models\ClassInstance;
+use App\Models\Package;
+use App\Models\Bill;
+use App\Models\ActivityLog;
+use App\Models\Teacher;
+use App\Services\PackageService;
+use App\Services\BillingService;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
+
+class ClassService
+{
+    protected $packageService;
+    protected $billingService;
+
+    public function __construct(PackageService $packageService, BillingService $billingService)
+    {
+        $this->packageService = $packageService;
+        $this->billingService = $billingService;
+    }
+
+    /**
+     * Update class status with business logic for package deduction and billing.
+     *
+     * @param int $classId
+     * @param string $newStatus
+     * @param int|null $userId
+     * @param string|null $reason
+     * @return ClassInstance
+     */
+    public function updateClassStatus(int $classId, string $newStatus, ?int $userId = null, ?string $reason = null): ClassInstance
+    {
+        $class = ClassInstance::with(['package', 'student', 'teacher.user'])->findOrFail($classId);
+        $oldStatus = $class->status;
+        $userId = $userId ?? Auth::id();
+
+        DB::beginTransaction();
+        try {
+            // Update status
+            $class->status = $newStatus;
+            
+            if (in_array($newStatus, ['cancelled_by_student', 'cancelled_by_teacher'])) {
+                $class->cancelled_by = $userId;
+                $class->cancellation_reason = $reason;
+            }
+            
+            $class->save();
+
+            // Handle package deduction and billing based on status
+            switch ($newStatus) {
+                case 'attended':
+                    // Only process if class wasn't already attended (to avoid double processing)
+                    if ($oldStatus !== 'attended') {
+                        $this->handleAttendedClass($class);
+                    }
+                    break;
+                
+                case 'cancelled_by_student':
+                    $this->handleCancelledByStudent($class);
+                    break;
+                
+                case 'cancelled_by_teacher':
+                    // No package deduction, no bill
+                    break;
+                
+                case 'absent_student':
+                    $this->handleAbsentStudent($class);
+                    break;
+                
+                case 'pending':
+                    // No action
+                    break;
+            }
+
+            // Log activity
+        ActivityLog::create([
+            'user_id' => $userId,
+            'student_id' => $class->student_id,
+            'action' => 'class_status_updated',
+            'description' => "Class status changed from {$oldStatus} to {$newStatus}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+            DB::commit();
+            return $class->fresh()->load(['student', 'teacher.user', 'course', 'package', 'bill']);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Handle attended class: assign to round, deduct, and create bill.
+     * Uses the new round-based architecture for immutable class assignments.
+     */
+    protected function handleAttendedClass(ClassInstance $class): void
+    {
+        $durationHours = $class->duration / 60.0; // Convert minutes to hours
+        
+        // Check if class already has a bill (already processed)
+        $hasBill = Bill::where('class_id', $class->id)->exists();
+        
+        // Find and assign active round if not already assigned
+        if (!$class->round_id) {
+            $activeRound = $this->roundService->getActiveRound($class->student_id);
+            
+            // If no active round exists, create one automatically from the package template
+            if (!$activeRound) {
+                // Find the last package for this student (package = template)
+                $package = Package::where('student_id', $class->student_id)
+                    ->orderBy('id', 'desc')
+                    ->first();
+                
+                if ($package) {
+                    // Auto-create a new round from the package template
+                    $activeRound = $this->roundService->createRound($class->student_id, $package->id, [
+                        'total_hours' => $package->total_hours,
+                        'start_date' => now()->format('Y-m-d'),
+                    ]);
+                    
+                    \Log::info('Auto-created new round for attended class', [
+                        'class_id' => $class->id,
+                        'student_id' => $class->student_id,
+                        'round_id' => $activeRound->id,
+                        'round_number' => $activeRound->round_number,
+                    ]);
+                } else {
+                    // No package template found - this shouldn't happen
+                    \Log::error('Cannot create round - no package template found', [
+                        'class_id' => $class->id,
+                        'student_id' => $class->student_id,
+                    ]);
+                    return; // Cannot proceed without a package
+                }
+            }
+            
+            // Now we have an active round (either found or created)
+            if ($activeRound && $activeRound->remaining_hours >= $durationHours) {
+                // Assign class to round (immutable assignment)
+                $class->round_id = $activeRound->id;
+                $class->package_id = $activeRound->package_id;
+                $class->save();
+                
+                // Deduct from round (only if not already processed)
+                if (!$hasBill) {
+                    $this->roundService->deductHoursFromRound($activeRound, $durationHours);
+                }
+            } else {
+                // Round doesn't have enough hours remaining
+                // This means the round is full - keep class attended but unassigned
+                \Log::warning('Round exists but insufficient hours', [
+                    'class_id' => $class->id,
+                    'round_id' => $activeRound ? $activeRound->id : null,
+                    'remaining_hours' => $activeRound ? $activeRound->remaining_hours : 0,
+                    'needed_hours' => $durationHours,
+                ]);
+                
+                // Link to package for billing
+                if ($activeRound) {
+                    $class->package_id = $activeRound->package_id;
+                    $class->save();
+                }
+            }
+        } else {
+            // Class already has a round assigned, deduct from it (only if not already processed)
+            if (!$hasBill) {
+                $round = PackageRound::find($class->round_id);
+                if ($round) {
+                    $this->roundService->deductHoursFromRound($round, $durationHours);
+                }
+            }
+        }
+
+        // Create bill (only if doesn't exist already)
+        // Bills can be created even without a round - shows pending payment
+        if (!$hasBill) {
+            $this->createBillForClass($class);
+        }
+    }
+
+    /**
+     * Handle cancelled by student: assign to round, deduct (configurable).
+     */
+    protected function handleCancelledByStudent(ClassInstance $class): void
+    {
+        $durationHours = $class->duration / 60.0; // Convert minutes to hours
+        
+        // Find and assign active round if not already assigned
+        if (!$class->round_id) {
+            $activeRound = $this->roundService->getActiveRound($class->student_id);
+            
+            // Auto-create round if none exists
+            if (!$activeRound) {
+                $package = Package::where('student_id', $class->student_id)
+                    ->orderBy('id', 'desc')
+                    ->first();
+                
+                if ($package) {
+                    $activeRound = $this->roundService->createRound($class->student_id, $package->id, [
+                        'total_hours' => $package->total_hours,
+                        'start_date' => now()->format('Y-m-d'),
+                    ]);
+                }
+            }
+            
+            if ($activeRound && $activeRound->remaining_hours >= $durationHours) {
+                // Assign class to round (immutable assignment)
+                $class->round_id = $activeRound->id;
+                $class->package_id = $activeRound->package_id;
+                $class->save();
+                
+                // Deduct from round (configurable via settings)
+                $this->roundService->deductHoursFromRound($activeRound, $durationHours);
+            } else if ($activeRound) {
+                // Link to package for billing
+                $class->package_id = $activeRound->package_id;
+                $class->save();
+            }
+        } else {
+            // Class already has a round assigned, deduct from it
+            $round = PackageRound::find($class->round_id);
+            if ($round) {
+                $this->roundService->deductHoursFromRound($round, $durationHours);
+            }
+        }
+
+        // Optionally create bill based on policy (can be configured later)
+        // For now, we'll skip bill creation for student cancellations
+    }
+
+    /**
+     * Handle absent student: assign to round, deduct, and create bill.
+     */
+    protected function handleAbsentStudent(ClassInstance $class): void
+    {
+        $durationHours = $class->duration / 60.0; // Convert minutes to hours
+        
+        // Find and assign active round if not already assigned
+        if (!$class->round_id) {
+            $activeRound = $this->roundService->getActiveRound($class->student_id);
+            
+            // Auto-create round if none exists
+            if (!$activeRound) {
+                $package = Package::where('student_id', $class->student_id)
+                    ->orderBy('id', 'desc')
+                    ->first();
+                
+                if ($package) {
+                    $activeRound = $this->roundService->createRound($class->student_id, $package->id, [
+                        'total_hours' => $package->total_hours,
+                        'start_date' => now()->format('Y-m-d'),
+                    ]);
+                }
+            }
+            
+            if ($activeRound && $activeRound->remaining_hours >= $durationHours) {
+                // Assign class to round (immutable assignment)
+                $class->round_id = $activeRound->id;
+                $class->package_id = $activeRound->package_id;
+                $class->save();
+                
+                // Deduct from round
+                $this->roundService->deductHoursFromRound($activeRound, $durationHours);
+            } else if ($activeRound) {
+                // Link to package for billing
+                $class->package_id = $activeRound->package_id;
+                $class->save();
+            }
+        } else {
+            // Class already has a round assigned, deduct from it
+            $round = PackageRound::find($class->round_id);
+            if ($round) {
+                $this->roundService->deductHoursFromRound($round, $durationHours);
+            }
+        }
+
+        // Create bill (absent students still get billed)
+        $this->createBillForClass($class);
+    }
+    
+    /**
+     * Find active package for student that has enough hours/classes remaining.
+     */
+    protected function findActivePackageForStudent(int $studentId, float $durationHours): ?Package
+    {
+        return Package::where('student_id', $studentId)
+            ->where('status', 'active')
+            ->where(function($query) use ($durationHours) {
+                // Package has enough remaining hours
+                $query->where('remaining_hours', '>=', $durationHours)
+                      // OR has remaining classes (for backwards compatibility)
+                      ->orWhere(function($q) {
+                          $q->whereNull('remaining_hours')
+                            ->where('remaining_classes', '>', 0);
+                      });
+            })
+            ->orderBy('created_at', 'asc') // Use oldest active package first (FIFO)
+            ->first();
+    }
+
+    /**
+     * Create bill for a class instance using BillingService.
+     * Bills accumulate incrementally by round/package.
+     * 
+     * Note: Bills can be created even without a round_id if there's a package_id.
+     * This happens when a class is attended but no active round exists yet.
+     */
+    protected function createBillForClass(ClassInstance $class): void
+    {
+        try {
+            // Skip bill creation if class has neither round nor package
+            // (shouldn't happen in normal flow, but safety check)
+            if (!$class->round_id && !$class->package_id) {
+                \Log::warning('Cannot create bill - class has no round or package', [
+                    'class_id' => $class->id,
+                    'student_id' => $class->student_id,
+                ]);
+                return;
+            }
+
+            // Use BillingService to create or update incremental bill
+            $this->billingService->createBillForClass($class);
+        } catch (\Exception $e) {
+            // Log error but don't fail the class status update
+            \Log::error('Failed to create bill for class', [
+                'class_id' => $class->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Update class time/details.
+     *
+     * @param int $classId
+     * @param string $newDate
+     * @param string $newStartTime
+     * @param string $newEndTime
+     * @param int|null $studentId
+     * @param int|null $teacherId
+     * @return ClassInstance
+     */
+    public function updateClassTime(int $classId, string $newDate, string $newStartTime, string $newEndTime, ?int $studentId = null, ?int $teacherId = null): ClassInstance
+    {
+        $class = ClassInstance::with(['timetable'])->findOrFail($classId);
+        
+        $start = Carbon::parse($newStartTime);
+        $end = Carbon::parse($newEndTime);
+        $duration = $start->diffInMinutes($end);
+
+        $oldStudentId = $class->student_id;
+        $oldTeacherId = $class->teacher_id;
+
+        $class->class_date = $newDate;
+        $class->start_time = $newStartTime;
+        $class->end_time = $newEndTime;
+        $class->duration = $duration;
+        
+        // Calculate student date and time based on timetable's time difference
+        if ($class->timetable) {
+            $timetable = $class->timetable;
+            
+            if ($timetable->time_difference_minutes !== null && $timetable->time_difference_minutes !== 0) {
+                // Use manual time difference in minutes
+                [$startHour, $startMinute] = explode(':', $newStartTime);
+                [$endHour, $endMinute] = explode(':', $newEndTime);
+                
+                // Create teacher datetime
+                $teacherStartDateTime = Carbon::create(
+                    Carbon::parse($newDate)->year,
+                    Carbon::parse($newDate)->month,
+                    Carbon::parse($newDate)->day,
+                    (int)$startHour,
+                    (int)$startMinute,
+                    0
+                );
+                $teacherEndDateTime = Carbon::create(
+                    Carbon::parse($newDate)->year,
+                    Carbon::parse($newDate)->month,
+                    Carbon::parse($newDate)->day,
+                    (int)$endHour,
+                    (int)$endMinute,
+                    0
+                );
+                
+                // Apply time difference (add minutes)
+                $studentStartDateTime = $teacherStartDateTime->copy()->addMinutes($timetable->time_difference_minutes);
+                $studentEndDateTime = $teacherEndDateTime->copy()->addMinutes($timetable->time_difference_minutes);
+                
+                // Get student date and times
+                $class->student_date = $studentStartDateTime->format('Y-m-d');
+                $class->student_start_time = $studentStartDateTime->format('H:i:s');
+                $class->student_end_time = $studentEndDateTime->format('H:i:s');
+            } else {
+                // Fallback to timezone conversion if no manual difference is set
+                $teacherStartDateTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $newDate . ' ' . $newStartTime . ':00',
+                    $timetable->teacher_timezone
+                );
+                $teacherEndDateTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $newDate . ' ' . $newEndTime . ':00',
+                    $timetable->teacher_timezone
+                );
+                
+                // Convert to student timezone
+                $studentStartDateTime = $teacherStartDateTime->copy()->setTimezone($timetable->student_timezone);
+                $studentEndDateTime = $teacherEndDateTime->copy()->setTimezone($timetable->student_timezone);
+                
+                // Get student date and times
+                $class->student_date = $studentStartDateTime->format('Y-m-d');
+                $class->student_start_time = $studentStartDateTime->format('H:i:s');
+                $class->student_end_time = $studentEndDateTime->format('H:i:s');
+            }
+        }
+        
+        if ($studentId !== null) {
+            $class->student_id = $studentId;
+        }
+        
+        if ($teacherId !== null) {
+            $class->teacher_id = $teacherId;
+        }
+        
+        $class->save();
+
+        // Log activity
+        $description = "Class rescheduled to {$newDate} {$newStartTime}";
+        if ($studentId !== null && $studentId !== $oldStudentId) {
+            $description .= " and student changed";
+        }
+        if ($teacherId !== null && $teacherId !== $oldTeacherId) {
+            $description .= " and teacher changed";
+        }
+
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $class->student_id,
+            'action' => 'class_updated',
+            'description' => $description,
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $class->fresh()->load(['student', 'teacher.user', 'course', 'timetable', 'package']);
+    }
+
+    /**
+     * Delete a single class instance.
+     *
+     * @param int $classId
+     * @return bool
+     */
+    public function deleteClass(int $classId): bool
+    {
+        $class = ClassInstance::findOrFail($classId);
+        
+        // Only allow deletion of pending classes
+        if ($class->status !== 'pending') {
+            throw new \Exception('Cannot delete class that is not pending');
+        }
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $class->student_id,
+            'action' => 'class_deleted',
+            'description' => "Class deleted for {$class->class_date}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $class->delete();
+    }
+
+    /**
+     * Delete this instance and all future recurring instances from same timetable.
+     *
+     * @param int $classId
+     * @return int
+     */
+    public function deleteFutureRecurring(int $classId): int
+    {
+        $class = ClassInstance::findOrFail($classId);
+        
+        if (!$class->timetable_id) {
+            throw new \Exception('Class is not part of a recurring timetable');
+        }
+
+        $deleted = ClassInstance::where('timetable_id', $class->timetable_id)
+            ->where('class_date', '>=', $class->class_date)
+            ->where('status', 'pending')
+            ->delete();
+
+        // Log activity
+        ActivityLog::create([
+            'user_id' => Auth::id(),
+            'student_id' => $class->student_id,
+            'action' => 'future_classes_deleted',
+            'description' => "Deleted future classes from timetable starting {$class->class_date}",
+            'ip_address' => request()->ip(),
+            'created_at' => now(),
+        ]);
+
+        return $deleted;
+    }
+
+    /**
+     * Get classes for calendar view with filters.
+     *
+     * @param array $filters
+     * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
+     */
+    public function getCalendarData(array $filters = [])
+    {
+        $query = ClassInstance::with(['student', 'teacher.user', 'course', 'timetable', 'package']);
+
+        // Exclude classes that belong to paid packages
+        // A class belongs to a paid package if:
+        // 1. It has package_id set and that package is paid, OR
+        // 2. It's a completed class (attended, cancelled_by_student, cancelled_by_teacher) that falls within
+        //    a paid package's class allocation for that student
+        
+        // First, exclude classes with direct package_id pointing to paid packages
+        $query->where(function ($q) {
+            $q->whereNull('package_id') // Classes without direct package link
+              ->orWhereHas('package', function ($packageQuery) {
+                  $packageQuery->where('status', '!=', 'paid'); // Package is not paid
+              });
+        });
+        
+        // Additionally, exclude completed classes that would belong to a paid package
+        // based on chronological distribution (the same logic used in getStudentPackagesWithClassesByRounds)
+        // Get all paid package IDs with their student_id and total_hours
+        $paidPackages = \App\Models\Package::where('status', 'paid')
+            ->select('id', 'student_id', 'total_hours', 'round_number')
+            ->get()
+            ->groupBy('student_id');
+        
+        if ($paidPackages->isNotEmpty()) {
+            // For each student with paid packages, calculate which classes belong to paid packages
+            foreach ($paidPackages as $studentId => $packages) {
+                // Get total hours of all paid packages for this student
+                $totalPaidHours = $packages->sum('total_hours');
+                
+                // Get the IDs of classes that fill those paid package hours (chronologically)
+                $classesToExclude = ClassInstance::where('student_id', $studentId)
+                    ->whereIn('status', ['attended', 'cancelled_by_student', 'cancelled_by_teacher'])
+                    ->orderBy('class_date', 'asc')
+                    ->orderBy('start_time', 'asc')
+                    ->get();
+                
+                $excludeIds = [];
+                $cumulativeHours = 0;
+                
+                foreach ($classesToExclude as $class) {
+                    $durationHours = $class->duration / 60.0;
+                    // Cancelled by teacher doesn't count towards hours but still belongs to the package
+                    $countsTowardsLimit = $class->status !== 'cancelled_by_teacher';
+                    
+                    if ($countsTowardsLimit) {
+                        if ($cumulativeHours + $durationHours <= $totalPaidHours) {
+                            $excludeIds[] = $class->id;
+                            $cumulativeHours += $durationHours;
+                        } else {
+                            break; // Remaining classes belong to active/finished packages
+                        }
+                    } else {
+                        // Cancelled by teacher - include if we're still within paid package range
+                        if ($cumulativeHours < $totalPaidHours) {
+                            $excludeIds[] = $class->id;
+                        }
+                    }
+                }
+                
+                if (!empty($excludeIds)) {
+                    $query->whereNotIn('id', $excludeIds);
+                }
+            }
+        }
+
+        // Date filtering: Filter by teacher's date (class_date) only
+        if (isset($filters['start_date'])) {
+            $query->where('class_date', '>=', $filters['start_date']);
+        }
+
+        if (isset($filters['end_date'])) {
+            $query->where('class_date', '<=', $filters['end_date']);
+        }
+
+        if (isset($filters['student_id'])) {
+            $query->where('student_id', $filters['student_id']);
+        }
+
+        if (isset($filters['teacher_id'])) {
+            $query->where('teacher_id', $filters['teacher_id']);
+        }
+
+        if (isset($filters['course_id'])) {
+            $query->where('course_id', $filters['course_id']);
+        }
+
+        if (isset($filters['status'])) {
+            $query->where('status', $filters['status']);
+        }
+
+        $perPage = $filters['per_page'] ?? 50;
+        $page = $filters['page'] ?? 1;
+
+        return $query->orderBy('class_date')
+            ->orderBy('start_time')
+            ->paginate($perPage, ['*'], 'page', $page);
+    }
+}

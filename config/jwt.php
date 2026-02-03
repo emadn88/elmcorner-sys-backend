@@ -101,7 +101,7 @@ return [
     |
     */
 
-    'ttl' => (int) env('JWT_TTL', 60),
+    'ttl' => (int) env('JWT_TTL', 1440), // Default to 24 hours (1440 minutes) instead of 1 hour
 
     /*
     |--------------------------------------------------------------------------

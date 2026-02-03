@@ -305,6 +305,172 @@ class BillingService
     }
 
     /**
+     * Format WhatsApp message for package bills with language support
+     */
+    public function formatPackageBillWhatsAppMessage(Package $package, $bills, array $billsSummary, string $language = 'ar'): string
+    {
+        $studentName = $package->student->full_name;
+        $totalAmount = number_format($billsSummary['total_amount'], 2);
+        $currency = $billsSummary['currency'];
+        $totalHours = number_format($billsSummary['total_hours'], 2);
+        
+        // Get date range from package
+        $startDate = $package->start_date ? Carbon::parse($package->start_date)->format('Y-m-d') : '';
+        $endDate = $package->updated_at ? Carbon::parse($package->updated_at)->format('Y-m-d') : '';
+        
+        // Format dates for display
+        $startDateFormatted = $startDate ? Carbon::parse($startDate)->format('M d, Y') : '';
+        $endDateFormatted = $endDate ? Carbon::parse($endDate)->format('M d, Y') : '';
+        
+        // Get support phone from config
+        $supportPhone = config('whatsapp.support_phone', '+19406182531');
+
+        // Normalize language
+        $language = strtolower(trim($language));
+        if (!in_array($language, ['ar', 'en', 'fr'])) {
+            $language = 'ar';
+        }
+
+        // Generate payment links for unpaid bills
+        $paymentLinks = [];
+        foreach ($bills as $bill) {
+            // Get bill status and ID (handle both collection items and arrays)
+            $billStatus = is_object($bill) ? $bill->status : ($bill['status'] ?? null);
+            
+            if (in_array($billStatus, ['pending', 'sent'])) {
+                $billId = is_object($bill) ? $bill->id : ($bill['id'] ?? null);
+                
+                if (!$billId) {
+                    continue;
+                }
+                
+                // Get or generate payment token
+                $billToken = null;
+                if (is_object($bill)) {
+                    $billToken = $bill->payment_token;
+                } else {
+                    $billToken = $bill['payment_token'] ?? null;
+                }
+                
+                // Generate payment token if not exists
+                if (!$billToken) {
+                    $this->generatePaymentToken($billId);
+                    // Reload bill to get the new token
+                    $billObj = Bill::find($billId);
+                    if ($billObj) {
+                        $billToken = $billObj->payment_token;
+                        // Update the original bill object if it's an object
+                        if (is_object($bill)) {
+                            $bill->payment_token = $billToken;
+                        }
+                    }
+                }
+                
+                // Generate payment link - extract just the 5-character suffix
+                if ($billToken) {
+                    $tokenSuffix = str_replace('elmcorner', '', $billToken);
+                    $paymentUrl = url("/payment/{$tokenSuffix}");
+                    $paymentLinks[] = $paymentUrl;
+                }
+            }
+        }
+
+        // Format message based on language
+        if ($language === 'en') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "👋 Hello {$studentName},\n\n";
+            $message .= "📋 *That's your bill*\n";
+            $message .= "📅 From: {$startDateFormatted}\n";
+            $message .= "📅 To: {$endDateFormatted}\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📊 *Bill Details*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "⏱️ Total Hours: *{$totalHours} hours*\n";
+            $message .= "💰 Total Amount: *{$totalAmount} {$currency}*\n\n";
+            
+            if (count($paymentLinks) > 0) {
+                $message .= "━━━━━━━━━━━━━━━━━━\n";
+                $message .= "💳 *Payment Link*\n";
+                $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+                foreach ($paymentLinks as $index => $link) {
+                    $message .= ($index + 1) . ". {$link}\n";
+                }
+                $message .= "\n";
+            }
+            
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "🆘 *Support*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📱 WhatsApp: {$supportPhone}\n";
+            $message .= "💬 Need help? Contact us anytime!\n\n";
+            $message .= "Thank you! 🙏";
+        } elseif ($language === 'fr') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "👋 Bonjour {$studentName},\n\n";
+            $message .= "📋 *Voici votre facture*\n";
+            $message .= "📅 Du: {$startDateFormatted}\n";
+            $message .= "📅 Au: {$endDateFormatted}\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📊 *Détails de la facture*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "⏱️ Heures totales: *{$totalHours} heures*\n";
+            $message .= "💰 Montant total: *{$totalAmount} {$currency}*\n\n";
+            
+            if (count($paymentLinks) > 0) {
+                $message .= "━━━━━━━━━━━━━━━━━━\n";
+                $message .= "💳 *Lien de paiement*\n";
+                $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+                foreach ($paymentLinks as $index => $link) {
+                    $message .= ($index + 1) . ". {$link}\n";
+                }
+                $message .= "\n";
+            }
+            
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "🆘 *Support*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📱 WhatsApp: {$supportPhone}\n";
+            $message .= "💬 Besoin d'aide? Contactez-nous à tout moment!\n\n";
+            $message .= "Merci! 🙏";
+        } else {
+            // Arabic (default)
+            // Format dates in Arabic-friendly format
+            $startDateAr = $startDate ? Carbon::parse($startDate)->format('Y-m-d') : '';
+            $endDateAr = $endDate ? Carbon::parse($endDate)->format('Y-m-d') : '';
+            
+            $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+            $message .= "👋 مرحباً {$studentName},\n\n";
+            $message .= "📋 *هذه فاتورتك*\n";
+            $message .= "📅 من: {$startDateAr}\n";
+            $message .= "📅 إلى: {$endDateAr}\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📊 *تفاصيل الفاتورة*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "⏱️ إجمالي الساعات: *{$totalHours} ساعة*\n";
+            $message .= "💰 المبلغ الإجمالي: *{$totalAmount} {$currency}*\n\n";
+            
+            if (count($paymentLinks) > 0) {
+                $message .= "━━━━━━━━━━━━━━━━━━\n";
+                $message .= "💳 *رابط الدفع*\n";
+                $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+                foreach ($paymentLinks as $index => $link) {
+                    $message .= ($index + 1) . ". {$link}\n";
+                }
+                $message .= "\n";
+            }
+            
+            $message .= "━━━━━━━━━━━━━━━━━━\n";
+            $message .= "🆘 *الدعم الفني*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📱 واتساب: {$supportPhone}\n";
+            $message .= "💬 تحتاج مساعدة؟ تواصل معنا في أي وقت!\n\n";
+            $message .= "شكراً لك! 🙏";
+        }
+
+        return $message;
+    }
+
+    /**
      * Generate PDF for bill
      */
     public function generateBillPDF(int $billId): string
@@ -341,15 +507,27 @@ class BillingService
         }
 
         // Generate PDF using Spatie PDF
-        \Spatie\LaravelPdf\Facades\Pdf::view('bills.pdf', [
-            'bill' => $bill,
-            'classes' => $classes,
-        ])
-            ->format(\Spatie\LaravelPdf\Enums\Format::A4)
-            ->orientation(\Spatie\LaravelPdf\Enums\Orientation::Portrait)
-            ->save($fullPath);
+        try {
+            \Spatie\LaravelPdf\Facades\Pdf::view('bills.pdf', [
+                'bill' => $bill,
+                'classes' => $classes,
+            ])
+                ->format(\Spatie\LaravelPdf\Enums\Format::A4)
+                ->orientation(\Spatie\LaravelPdf\Enums\Orientation::Portrait)
+                ->save($fullPath);
 
-        return $path;
+            // Verify file was created
+            if (!file_exists($fullPath)) {
+                throw new \Exception('PDF file was not created at path: ' . $fullPath);
+            }
+
+            return $path;
+        } catch (\Exception $e) {
+            \Log::error('PDF generation failed for bill ID: ' . $billId);
+            \Log::error('Error: ' . $e->getMessage());
+            \Log::error('Stack trace: ' . $e->getTraceAsString());
+            throw new \Exception('Failed to generate PDF: ' . $e->getMessage());
+        }
     }
 
     /**

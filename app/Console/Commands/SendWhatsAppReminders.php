@@ -65,6 +65,35 @@ class SendWhatsAppReminders extends Command
     {
         $sentCount = 0;
 
+        // 2 hours before - check if trial starts in 2 hours (within current minute) - STUDENT ONLY
+        $twoHoursBefore = $now->copy()->addHours(2);
+        $trials2HoursBefore = TrialClass::where('status', 'pending')
+            ->where('reminder_2hours_before_sent', false)
+            ->whereDate('trial_date', $twoHoursBefore->format('Y-m-d'))
+            ->get()
+            ->filter(function ($trial) use ($twoHoursBefore) {
+                // Use student time if available, otherwise use default trial time
+                if ($trial->student_date && $trial->student_start_time) {
+                    $trialDate = Carbon::parse($trial->student_date);
+                    $startTime = Carbon::parse($trial->student_start_time);
+                } else {
+                    $trialDate = Carbon::parse($trial->trial_date);
+                    $startTime = Carbon::parse($trial->start_time);
+                }
+                $trialDateTime = $trialDate->copy()->setTime($startTime->hour, $startTime->minute, 0);
+                // Check if trial starts within the current minute (2 hours from now)
+                return $trialDateTime->format('Y-m-d H:i') === $twoHoursBefore->format('Y-m-d H:i');
+            });
+
+        foreach ($trials2HoursBefore as $trial) {
+            // Only send to student for 2 hours before reminder
+            if ($this->reminderService->sendTrialReminderToStudentOnly($trial, '2hours_before')) {
+                $trial->reminder_2hours_before_sent = true;
+                $trial->save();
+                $sentCount++;
+            }
+        }
+
         // 5 minutes before - check if trial starts in 5 minutes (within current minute)
         $fiveMinutesBefore = $now->copy()->addMinutes(5);
         $trials5MinBefore = TrialClass::where('status', 'pending')
@@ -109,16 +138,24 @@ class SendWhatsAppReminders extends Command
         }
 
         // 5 minutes after (only if not entered) - check if trial started 5 minutes ago (within current minute)
+        // Also stop if trial time has passed significantly (more than 15 minutes) to prevent endless reminders
         $fiveMinutesAgo = $now->copy()->subMinutes(5);
         $trials5MinAfter = TrialClass::where('status', 'pending')
             ->where('reminder_5min_after_sent', false)
             ->where('meet_link_used', false)
             ->whereDate('trial_date', $fiveMinutesAgo->format('Y-m-d'))
             ->get()
-            ->filter(function ($trial) use ($fiveMinutesAgo) {
+            ->filter(function ($trial) use ($fiveMinutesAgo, $now) {
                 $trialDate = Carbon::parse($trial->trial_date);
                 $startTime = Carbon::parse($trial->start_time);
                 $trialDateTime = $trialDate->copy()->setTime($startTime->hour, $startTime->minute, 0);
+                
+                // Don't send if trial time has passed more than 15 minutes ago (safety check)
+                $minutesSinceStart = $now->diffInMinutes($trialDateTime, false);
+                if ($minutesSinceStart > 15) {
+                    return false; // Trial started more than 15 minutes ago, stop reminders
+                }
+                
                 // Check if trial started within the current minute (5 minutes ago)
                 return $trialDateTime->format('Y-m-d H:i') === $fiveMinutesAgo->format('Y-m-d H:i');
             });
@@ -140,6 +177,39 @@ class SendWhatsAppReminders extends Command
     protected function processClassReminders(Carbon $now): int
     {
         $sentCount = 0;
+
+        // 2 hours before - check if class starts in 2 hours (within current minute) - STUDENT ONLY
+        $twoHoursBefore = $now->copy()->addHours(2);
+        $classes2HoursBefore = ClassInstance::where('status', 'pending')
+            ->where('reminder_2hours_before_sent', false)
+            ->whereDate('class_date', $twoHoursBefore->format('Y-m-d'))
+            ->get()
+            ->filter(function ($class) use ($twoHoursBefore) {
+                // Use student time if available, otherwise use default class time
+                if ($class->student_date && $class->student_start_time) {
+                    $classDate = Carbon::parse($class->student_date);
+                    $startTime = is_string($class->student_start_time) 
+                        ? Carbon::parse($class->student_start_time) 
+                        : Carbon::parse($class->student_start_time);
+                } else {
+                    $classDate = Carbon::parse($class->class_date);
+                    $startTime = is_string($class->start_time) 
+                        ? Carbon::parse($class->start_time) 
+                        : Carbon::parse($class->start_time);
+                }
+                $classDateTime = $classDate->copy()->setTime($startTime->hour, $startTime->minute, 0);
+                // Check if class starts within the current minute (2 hours from now)
+                return $classDateTime->format('Y-m-d H:i') === $twoHoursBefore->format('Y-m-d H:i');
+            });
+
+        foreach ($classes2HoursBefore as $class) {
+            // Only send to student for 2 hours before reminder
+            if ($this->reminderService->sendClassReminderToStudentOnly($class, '2hours_before')) {
+                $class->reminder_2hours_before_sent = true;
+                $class->save();
+                $sentCount++;
+            }
+        }
 
         // 5 minutes before - check if class starts in 5 minutes (within current minute)
         $fiveMinutesBefore = $now->copy()->addMinutes(5);
@@ -188,19 +258,37 @@ class SendWhatsAppReminders extends Command
             }
         }
 
-        // 5 minutes after (only if not entered) - check if class started 5 minutes ago (within current minute)
+        // 5 minutes after (only if teacher hasn't clicked start meet before 5 minutes) - check if class started 5 minutes ago (within current minute)
+        // Also stop if class time has passed significantly (more than 15 minutes) to prevent endless reminders
         $fiveMinutesAgo = $now->copy()->subMinutes(5);
         $classes5MinAfter = ClassInstance::where('status', 'pending')
             ->where('reminder_5min_after_sent', false)
             ->where('meet_link_used', false)
             ->whereDate('class_date', $fiveMinutesAgo->format('Y-m-d'))
             ->get()
-            ->filter(function ($class) use ($fiveMinutesAgo) {
+            ->filter(function ($class) use ($fiveMinutesAgo, $now) {
                 $startTime = is_string($class->start_time) 
                     ? Carbon::parse($class->start_time) 
                     : Carbon::parse($class->start_time);
                 $classDate = Carbon::parse($class->class_date);
                 $classDateTime = $classDate->copy()->setTime($startTime->hour, $startTime->minute, 0);
+                
+                // Don't send if class time has passed more than 15 minutes ago (safety check)
+                $minutesSinceStart = $now->diffInMinutes($classDateTime, false);
+                if ($minutesSinceStart > 15) {
+                    return false; // Class started more than 15 minutes ago, stop reminders
+                }
+                
+                // Check if teacher clicked start meet before 5 minutes (if meet_link_accessed_at exists and is before 5 minutes after start)
+                if ($class->meet_link_accessed_at) {
+                    $accessedAt = Carbon::parse($class->meet_link_accessed_at);
+                    $fiveMinutesAfterStart = $classDateTime->copy()->addMinutes(5);
+                    // If teacher accessed meet before 5 minutes after start, don't send reminder
+                    if ($accessedAt->lessThanOrEqualTo($fiveMinutesAfterStart)) {
+                        return false;
+                    }
+                }
+                
                 // Check if class started within the current minute (5 minutes ago)
                 return $classDateTime->format('Y-m-d H:i') === $fiveMinutesAgo->format('Y-m-d H:i');
             });

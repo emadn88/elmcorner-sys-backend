@@ -38,12 +38,15 @@ class WhatsAppService
     /**
      * Send a simple text message
      */
-    public function sendMessage(string $phone, string $message, ?string $templateId = null, array $params = []): bool
+    public function sendMessage(string $phone, string $message, ?string $templateId = null, array $params = [], ?int $packageId = null, ?string $messageType = null): bool
     {
         $success = $this->driver->sendMessage($phone, $message, $templateId, $params);
 
+        // Determine message type - if packageId is provided and no explicit type, default to 'bill' for package notifications
+        $logMessageType = $messageType ?? ($packageId ? 'bill' : 'reminder');
+
         // Log to database
-        $this->logMessage($phone, 'reminder', $success ? 'sent' : 'failed', $success ? null : 'Failed to send message');
+        $this->logMessage($phone, $logMessageType, $success ? 'sent' : 'failed', $success ? null : 'Failed to send message', $packageId);
 
         // Send copy to monitoring number if enabled
         $this->sendMonitoringCopy($phone, $message, $success);
@@ -74,11 +77,12 @@ class WhatsAppService
     /**
      * Log message to whatsapp_logs table
      */
-    protected function logMessage(string $phone, string $messageType, string $status, ?string $error = null): void
+    protected function logMessage(string $phone, string $messageType, string $status, ?string $error = null, ?int $packageId = null): void
     {
         try {
             DB::table('whatsapp_logs')->insert([
                 'recipient' => $phone,
+                'package_id' => $packageId,
                 'message_type' => $messageType,
                 'status' => $status,
                 'sent_at' => $status === 'sent' ? now() : null,
@@ -89,6 +93,7 @@ class WhatsAppService
         } catch (\Exception $e) {
             Log::error('Failed to log WhatsApp message', [
                 'phone' => $phone,
+                'package_id' => $packageId,
                 'error' => $e->getMessage(),
             ]);
         }

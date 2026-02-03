@@ -64,9 +64,16 @@ class SalaryService
             return null;
         }
 
-        // Get attended classes for the month
+        // Get attended classes AND approved cancellations for the month (both count for salary)
+        // Rejected cancellations and classes cancelled by teacher/admin do NOT count for salary
         $classes = ClassInstance::where('teacher_id', $teacherId)
-            ->where('status', 'attended')
+            ->where(function($query) {
+                $query->where('status', 'attended')
+                    ->orWhere(function($q) {
+                        $q->where('status', 'cancelled_by_student')
+                          ->where('cancellation_request_status', 'approved');
+                    });
+            })
             ->whereYear('class_date', $year)
             ->whereMonth('class_date', $month)
             ->with(['student', 'course'])
@@ -140,9 +147,16 @@ class SalaryService
 
         $teacher = Teacher::with('user')->findOrFail($teacherId);
 
-        // Get attended classes with details
+        // Get attended classes AND approved cancellations with details (both count for salary)
+        // Rejected cancellations and classes cancelled by teacher/admin do NOT count for salary
         $classes = ClassInstance::where('teacher_id', $teacherId)
-            ->where('status', 'attended')
+            ->where(function($query) {
+                $query->where('status', 'attended')
+                    ->orWhere(function($q) {
+                        $q->where('status', 'cancelled_by_student')
+                          ->where('cancellation_request_status', 'approved');
+                    });
+            })
             ->whereYear('class_date', $year)
             ->whereMonth('class_date', $month)
             ->with(['student', 'course'])

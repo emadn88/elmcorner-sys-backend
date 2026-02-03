@@ -6,7 +6,7 @@
         "dev": "vite"
     },
     "dependencies": {
-        "puppeteer": "^21.0.0"
+        "puppeteer": "^21.11.0"
     },
     "devDependencies": {
         "autoprefixer": "^10.4.20",

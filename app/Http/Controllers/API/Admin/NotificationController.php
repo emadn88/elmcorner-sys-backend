@@ -26,19 +26,11 @@ class NotificationController extends Controller
 
         $notifications = [];
 
-        // Get package notifications (finished packages without notification sent)
+        // Get package notifications (finished packages only - pending payment)
+        // Exclude 'paid' packages as they have been paid and archived
         if ($type === 'all' || $type === 'packages') {
             $packages = \App\Models\Package::with(['student.family'])
-                ->where(function ($q) {
-                    $q->where('status', 'finished')
-                      ->orWhere(function ($q2) {
-                          $q2->where('remaining_hours', '<=', 0)
-                             ->orWhere(function ($q3) {
-                                 $q3->whereNull('remaining_hours')
-                                    ->where('remaining_classes', '<=', 0);
-                             });
-                      });
-                })
+                ->where('status', 'finished') // Only 'finished' status (pending payment)
                 ->get()
                 ->map(function ($package) {
                     return [
@@ -68,13 +60,30 @@ class NotificationController extends Controller
                         'class_id' => $class->id,
                         'student_name' => $class->student->full_name ?? 'N/A',
                         'student_id' => $class->student_id,
+                        'student_email' => $class->student->email ?? null,
+                        'student_whatsapp' => $class->student->whatsapp ?? null,
                         'teacher_name' => $class->teacher->user->name ?? 'N/A',
                         'teacher_id' => $class->teacher_id,
                         'course_name' => $class->course->name ?? 'N/A',
+                        'course_id' => $class->course_id,
                         'class_date' => $class->class_date->format('Y-m-d'),
-                        'start_time' => $class->start_time,
+                        'start_time' => $class->start_time instanceof \Carbon\Carbon 
+                            ? $class->start_time->format('H:i:s')
+                            : $class->start_time,
+                        'end_time' => $class->end_time instanceof \Carbon\Carbon
+                            ? $class->end_time->format('H:i:s')
+                            : $class->end_time,
+                        'student_date' => $class->student_date ? $class->student_date->format('Y-m-d') : null,
+                        'student_start_time' => $class->student_start_time instanceof \Carbon\Carbon
+                            ? $class->student_start_time->format('H:i:s')
+                            : ($class->student_start_time ?? null),
+                        'student_end_time' => $class->student_end_time instanceof \Carbon\Carbon
+                            ? $class->student_end_time->format('H:i:s')
+                            : ($class->student_end_time ?? null),
+                        'duration' => $class->duration,
                         'cancellation_reason' => $class->cancellation_reason,
                         'status' => $class->cancellation_request_status,
+                        'class_status' => $class->status,
                         'created_at' => $class->created_at,
                         'updated_at' => $class->updated_at,
                     ];
@@ -120,8 +129,12 @@ class NotificationController extends Controller
     /**
      * Reject class cancellation request
      */
-    public function rejectCancellation(int $id): JsonResponse
+    public function rejectCancellation(Request $request, int $id): JsonResponse
     {
+        $request->validate([
+            'reason' => 'required|string|min:3|max:1000',
+        ]);
+
         $class = ClassInstance::findOrFail($id);
 
         if ($class->cancellation_request_status !== 'pending') {
@@ -131,12 +144,71 @@ class NotificationController extends Controller
             ], 400);
         }
 
-        $this->classService->rejectCancellation($class);
+        $this->classService->rejectCancellation($class, $request->input('reason'));
 
         return response()->json([
             'status' => 'success',
             'message' => 'Cancellation request rejected',
             'data' => $class->fresh()->load(['student', 'teacher.user', 'course']),
+        ]);
+    }
+
+    /**
+     * Get all cancellation requests with filters (for log)
+     */
+    public function getAllCancellationRequests(Request $request): JsonResponse
+    {
+        $filters = [
+            'status' => $request->input('status', 'all'),
+            'date_from' => $request->input('date_from'),
+            'date_to' => $request->input('date_to'),
+            'teacher_id' => $request->input('teacher_id'),
+            'student_id' => $request->input('student_id'),
+            'course_id' => $request->input('course_id'),
+            'search' => $request->input('search'),
+        ];
+
+        $cancellations = $this->classService->getAllCancellationRequests($filters)
+            ->map(function ($class) {
+                return [
+                    'id' => $class->id,
+                    'type' => 'class_cancellation',
+                    'class_id' => $class->id,
+                    'student_name' => $class->student->full_name ?? 'N/A',
+                    'student_id' => $class->student_id,
+                    'student_email' => $class->student->email ?? null,
+                    'student_whatsapp' => $class->student->whatsapp ?? null,
+                    'teacher_name' => $class->teacher->user->name ?? 'N/A',
+                    'teacher_id' => $class->teacher_id,
+                    'course_name' => $class->course->name ?? 'N/A',
+                    'course_id' => $class->course_id,
+                    'class_date' => $class->class_date->format('Y-m-d'),
+                    'start_time' => $class->start_time instanceof \Carbon\Carbon 
+                        ? $class->start_time->format('H:i:s')
+                        : $class->start_time,
+                    'end_time' => $class->end_time instanceof \Carbon\Carbon
+                        ? $class->end_time->format('H:i:s')
+                        : $class->end_time,
+                    'student_date' => $class->student_date ? $class->student_date->format('Y-m-d') : null,
+                    'student_start_time' => $class->student_start_time instanceof \Carbon\Carbon
+                        ? $class->student_start_time->format('H:i:s')
+                        : ($class->student_start_time ?? null),
+                    'student_end_time' => $class->student_end_time instanceof \Carbon\Carbon
+                        ? $class->student_end_time->format('H:i:s')
+                        : ($class->student_end_time ?? null),
+                    'duration' => $class->duration,
+                    'cancellation_reason' => $class->cancellation_reason,
+                    'status' => $class->cancellation_request_status,
+                    'class_status' => $class->status,
+                    'admin_rejection_reason' => $class->admin_rejection_reason,
+                    'created_at' => $class->created_at,
+                    'updated_at' => $class->updated_at,
+                ];
+            });
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $cancellations,
         ]);
     }
 }

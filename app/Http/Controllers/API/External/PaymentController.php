@@ -102,20 +102,37 @@ class PaymentController extends Controller
     {
         try {
             $bill = $this->billingService->getBillByToken($token);
+            
+            // Generate PDF
             $pdfPath = $this->billingService->generateBillPDF($bill->id);
+            $fullPath = storage_path('app/' . $pdfPath);
 
-            if (!Storage::exists($pdfPath)) {
+            // Check if file exists using file_exists (more reliable than Storage::exists)
+            if (!file_exists($fullPath)) {
+                \Log::error('PDF file not found at path: ' . $fullPath);
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'PDF file not found',
+                    'message' => 'PDF file not found. Please try again.',
                 ], 404);
             }
 
-            return Storage::download($pdfPath, 'bill_' . $bill->id . '.pdf');
+            // Generate a descriptive filename with student name
+            $studentName = $bill->student->full_name ?? 'student';
+            $sanitizedName = preg_replace('/[^a-z0-9]/i', '_', strtolower($studentName));
+            $date = now()->format('Y-m-d');
+            $filename = 'bill_' . $sanitizedName . '_' . $bill->id . '_' . $date . '.pdf';
+
+            // Return file download
+            return response()->download($fullPath, $filename, [
+                'Content-Type' => 'application/pdf',
+            ]);
         } catch (\Exception $e) {
+            \Log::error('PDF download error: ' . $e->getMessage());
+            \Log::error('Stack trace: ' . $e->getTraceAsString());
+            
             return response()->json([
                 'status' => 'error',
-                'message' => $e->getMessage(),
+                'message' => 'Failed to generate PDF: ' . $e->getMessage(),
             ], 500);
         }
     }
@@ -126,7 +143,7 @@ class PaymentController extends Controller
     public function processPayment(Request $request, string $token): JsonResponse
     {
         $request->validate([
-            'payment_method' => 'required|string|in:credit_card,bank_transfer',
+            'payment_method' => 'required|string|in:credit_card,bank_transfer,paypal,anubpay',
         ]);
 
         try {

@@ -6,8 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Package\StorePackageRequest;
 use App\Http\Requests\Package\UpdatePackageRequest;
 use App\Models\Package;
+use App\Models\Bill;
+use App\Models\ClassInstance;
 use App\Services\PackageService;
 use App\Services\WhatsAppService;
+use App\Services\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,11 +19,16 @@ class PackageController extends Controller
 {
     protected $packageService;
     protected $whatsappService;
+    protected $billingService;
 
-    public function __construct(PackageService $packageService, WhatsAppService $whatsappService)
-    {
+    public function __construct(
+        PackageService $packageService,
+        WhatsAppService $whatsappService, 
+        BillingService $billingService
+    ) {
         $this->packageService = $packageService;
         $this->whatsappService = $whatsappService;
+        $this->billingService = $billingService;
     }
 
     /**
@@ -161,7 +169,7 @@ class PackageController extends Controller
     }
 
     /**
-     * Send WhatsApp notification for finished package
+     * Send WhatsApp notification for finished package with bill and payment links
      */
     public function notify(Request $request, string $id): JsonResponse
     {
@@ -174,38 +182,91 @@ class PackageController extends Controller
             ], 400);
         }
 
-        // Generate payment link (placeholder - will be implemented in Phase 8)
-        $paymentLink = url("/external/payment/token-placeholder");
+        try {
+            // Get all unpaid bills for this package
+            $bills = Bill::whereHas('class', function ($query) use ($id) {
+                $query->where('package_id', $id);
+            })->whereIn('status', ['pending', 'sent'])->get();
 
-        // Send WhatsApp notification
-        $variables = [
-            'link' => $paymentLink,
-        ];
+            // IMPORTANT: Generate payment tokens for all bills BEFORE formatting message
+            // This ensures payment links are included in the WhatsApp message
+            $billIds = $bills->pluck('id')->toArray();
+            \Log::info('PackageController::notify - Generating payment tokens', ['bill_ids' => $billIds]);
+            
+            foreach ($bills as $bill) {
+                if (!$bill->payment_token) {
+                    $this->billingService->generatePaymentToken($bill->id);
+                    \Log::info('Generated payment token', ['bill_id' => $bill->id]);
+                }
+            }
+            
+            // Reload bills to ensure all tokens are loaded
+            $bills = Bill::whereIn('id', $billIds)->get();
+            
+            \Log::info('Bills reloaded', [
+                'bills' => $bills->map(function($b) {
+                    return ['id' => $b->id, 'has_token' => !empty($b->payment_token), 'token' => $b->payment_token];
+                })->toArray()
+            ]);
 
-        $success = $this->whatsappService->sendTemplateMessage(
-            $package->student->whatsapp,
-            'package_finished',
-            $variables
-        );
+            // Get bills summary
+            $billsSummary = $this->packageService->getBillsSummary($id);
 
-        if ($success) {
-            // Update notification timestamp
-            $this->packageService->updateNotificationSent($package->id);
+            // Get student language (default to Arabic)
+            $studentLanguage = strtolower(trim($package->student->language ?? 'ar'));
+            if (!in_array($studentLanguage, ['ar', 'en', 'fr'])) {
+                $studentLanguage = 'ar';
+            }
+
+            // Format message with bill details and payment links
+            $message = $this->billingService->formatPackageBillWhatsAppMessage(
+                $package,
+                $bills,
+                $billsSummary,
+                $studentLanguage
+            );
+
+            // Send WhatsApp message
+            $success = $this->whatsappService->sendMessage(
+                $package->student->whatsapp,
+                $message,
+                null,
+                [],
+                $package->id
+            );
+
+            if ($success) {
+                // Update notification timestamp
+                $this->packageService->updateNotificationSent($package->id);
+
+                // Update bills status to 'sent' and set sent_at
+                foreach ($bills as $bill) {
+                    $bill->update([
+                        'status' => 'sent',
+                        'sent_at' => now(),
+                    ]);
+                }
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Notification sent successfully',
+                ]);
+            }
 
             return response()->json([
-                'status' => 'success',
-                'message' => 'Notification sent successfully',
-            ]);
+                'status' => 'error',
+                'message' => 'Failed to send notification',
+            ], 500);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
         }
-
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Failed to send notification',
-        ], 500);
     }
 
     /**
-     * Send bulk WhatsApp notifications
+     * Send bulk WhatsApp notifications with bills and payment links
      */
     public function bulkNotify(Request $request): JsonResponse
     {
@@ -229,17 +290,60 @@ class PackageController extends Controller
                     continue;
                 }
 
-                // Generate payment link (placeholder)
-                $paymentLink = url("/external/payment/token-placeholder");
+                // Get all unpaid bills for this package
+                $bills = Bill::whereHas('class', function ($query) use ($packageId) {
+                    $query->where('package_id', $packageId);
+                })->whereIn('status', ['pending', 'sent'])->get();
 
-                $success = $this->whatsappService->sendTemplateMessage(
+                // IMPORTANT: Generate payment tokens for all bills BEFORE formatting message
+                // This ensures payment links are included in the WhatsApp message
+                $billIds = $bills->pluck('id')->toArray();
+                foreach ($bills as $bill) {
+                    if (!$bill->payment_token) {
+                        $this->billingService->generatePaymentToken($bill->id);
+                    }
+                }
+                
+                // Reload bills to ensure all tokens are loaded
+                $bills = Bill::whereIn('id', $billIds)->get();
+
+                // Get bills summary
+                $billsSummary = $this->packageService->getBillsSummary($packageId);
+
+                // Get student language (default to Arabic)
+                $studentLanguage = strtolower(trim($package->student->language ?? 'ar'));
+                if (!in_array($studentLanguage, ['ar', 'en', 'fr'])) {
+                    $studentLanguage = 'ar';
+                }
+
+                // Format message with bill details and payment links
+                $message = $this->billingService->formatPackageBillWhatsAppMessage(
+                    $package,
+                    $bills,
+                    $billsSummary,
+                    $studentLanguage
+                );
+
+                // Send WhatsApp message
+                $success = $this->whatsappService->sendMessage(
                     $package->student->whatsapp,
-                    'package_finished',
-                    ['link' => $paymentLink]
+                    $message,
+                    null,
+                    [],
+                    $package->id
                 );
 
                 if ($success) {
                     $this->packageService->updateNotificationSent($package->id);
+                    
+                    // Update bills status to 'sent' and set sent_at
+                    foreach ($bills as $bill) {
+                        $bill->update([
+                            'status' => 'sent',
+                            'sent_at' => now(),
+                        ]);
+                    }
+                    
                     $successCount++;
                 } else {
                     $failedCount++;
@@ -273,6 +377,88 @@ class PackageController extends Controller
             'status' => 'success',
             'data' => $billsSummary,
         ]);
+    }
+
+    /**
+     * Get notification history for a package
+     */
+    public function notificationHistory(string $id): JsonResponse
+    {
+        $package = Package::findOrFail($id);
+
+        $notifications = DB::table('whatsapp_logs')
+            ->where('package_id', $id)
+            ->where('status', 'sent')
+            ->orderBy('sent_at', 'desc')
+            ->get()
+            ->map(function ($log) {
+                return [
+                    'id' => $log->id,
+                    'sent_at' => $log->sent_at,
+                    'status' => $log->status,
+                    'message_type' => $log->message_type,
+                    'recipient' => $log->recipient,
+                ];
+            });
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $notifications,
+        ]);
+    }
+
+    /**
+     * Mark a package as paid.
+     * 
+     * SIMPLE Flow:
+     * 1. Mark the package as 'paid' (freezes its classes)
+     * 2. Mark all bills for classes in this package as paid
+     * 
+     * NOTE: New packages are created automatically when needed (when a class is attended
+     * and no active package exists). No need to create one here.
+     */
+    public function markAsPaid(string $id): JsonResponse
+    {
+        try {
+            DB::beginTransaction();
+            
+            $package = Package::findOrFail($id);
+            
+            // Get all bills for classes in this package
+            $bills = Bill::whereHas('class', function ($query) use ($id) {
+                $query->where('package_id', $id);
+            })->get();
+
+            // Mark all bills as paid
+            foreach ($bills as $bill) {
+                $bill->status = 'paid';
+                $bill->payment_date = now();
+                $bill->save();
+            }
+
+            // Mark the package as 'paid' (classes assignments frozen)
+            $package->status = 'paid';
+            $package->last_notification_sent = now();
+            $package->notification_count = ($package->notification_count ?? 0) + 1;
+            $package->save();
+
+            DB::commit();
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Package marked as paid successfully',
+                'data' => [
+                    'package' => $package->fresh()->load('student'),
+                    'bills_updated' => $bills->count(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
@@ -332,34 +518,76 @@ class PackageController extends Controller
     }
 
     /**
-     * Get package classes with cumulative hour counters
+     * Get classes for a specific package
+     * Returns ONLY classes assigned to THIS package (no redistribution)
      */
     public function getPackageClasses(string $id): JsonResponse
     {
-        $classes = $this->packageService->getPackageClassesWithCounters($id);
+        $package = Package::with('student')->findOrFail($id);
+        
+        // Get ONLY classes for THIS package
+        // All classes (attended, cancelled_by_student, cancelled_by_teacher, absent_student) 
+        // should be assigned to a package and will show here
+        $classes = ClassInstance::where('package_id', $id)
+            ->with(['teacher.user', 'course', 'bill'])
+            ->orderBy('class_date', 'asc')
+            ->orderBy('start_time', 'asc')
+            ->get();
+        
+        // Calculate totals
+        $totalHours = 0;
+        $cumulativeHours = 0;
+        
+        $classesWithCounters = $classes->map(function ($class) use (&$cumulativeHours) {
+            $durationHours = $class->duration / 60.0;
+            $countsTowardsLimit = $class->status !== 'cancelled_by_teacher';
+            
+            if ($countsTowardsLimit) {
+                $cumulativeHours += $durationHours;
+            }
+            
+            return [
+                'class' => $class,
+                'duration_hours' => round($durationHours, 2),
+                'cumulative_hours' => round($cumulativeHours, 2),
+                'counter' => $countsTowardsLimit ? round($cumulativeHours, 2) : 0,
+                'counts_towards_limit' => $countsTowardsLimit,
+            ];
+        });
+        
+        $totalHours = $cumulativeHours;
+
+        // Return as array to match frontend expectations (rounds array)
+        // Each package is one "round" - just return this single package as an array
+        $roundData = [
+            'package' => [
+                'id' => $package->id,
+                'round_number' => $package->round_number,
+                'total_hours' => $package->total_hours,
+                'remaining_hours' => $package->remaining_hours,
+                'status' => $package->status,
+                'start_date' => $package->start_date ? $package->start_date->format('Y-m-d') : null,
+            ],
+            'classes' => $classesWithCounters->values()->all(),
+            'total_classes' => $classes->count(),
+            'total_hours_used' => round($totalHours, 2),
+        ];
 
         return response()->json([
             'status' => 'success',
-            'data' => $classes,
+            'data' => [$roundData], // Return as array to match frontend expectations
         ]);
     }
 
     /**
      * Get count of finished packages without notifications
+     * Only counts 'finished' status (pending payment), excludes 'paid' packages
      */
     public function getUnnotifiedCount(): JsonResponse
     {
-        $count = Package::where(function ($q) {
-                $q->where('status', 'finished')
-                  ->orWhere(function ($q2) {
-                      $q2->where('remaining_hours', '<=', 0)
-                         ->orWhere(function ($q3) {
-                             $q3->whereNull('remaining_hours')
-                                ->where('remaining_classes', '<=', 0);
-                         });
-                  });
-            })
-            ->whereNull('last_notification_sent')
+        // Count all finished packages (pending payment) regardless of notification status
+        // Badge should persist until package is marked as paid
+        $count = Package::where('status', 'finished') // Only 'finished' (pending payment, not yet paid)
             ->count();
 
         return response()->json([

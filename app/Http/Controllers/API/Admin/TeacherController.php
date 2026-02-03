@@ -9,12 +9,17 @@ use App\Models\Teacher;
 use App\Models\User;
 use App\Models\ActivityLog;
 use App\Models\TeacherAvailability;
+use App\Models\ClassInstance;
 use App\Services\TeacherService;
 use App\Services\WhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\View;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class TeacherController extends Controller
 {
@@ -739,6 +744,436 @@ class TeacherController extends Controller
                     'system_link' => $systemLink,
                 ],
             ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get teacher rate details (cumulative punctuality and report submission rates)
+     */
+    public function getRateDetails(Request $request, string $id): JsonResponse
+    {
+        try {
+            $teacher = Teacher::findOrFail($id);
+            
+            $filters = [
+                'status' => $request->input('status', 'all'),
+                'date_from' => $request->input('date_from'),
+                'date_to' => $request->input('date_to'),
+                'rate_type' => $request->input('rate_type', 'all'), // 'all', 'punctuality', 'report_submission'
+            ];
+
+            // Get all classes for the teacher
+            $query = ClassInstance::where('teacher_id', $teacher->id);
+
+            // Apply date filters
+            if ($filters['date_from']) {
+                $query->whereDate('class_date', '>=', $filters['date_from']);
+            }
+            if ($filters['date_to']) {
+                $query->whereDate('class_date', '<=', $filters['date_to']);
+            }
+
+            $allClasses = $query->with(['student', 'course'])->get();
+
+            // Calculate cumulative rates
+            $punctualityData = $this->calculatePunctualityRate($allClasses);
+            $reportSubmissionData = $this->calculateReportSubmissionRate($allClasses);
+            $attendanceData = $this->calculateAttendanceRate($allClasses);
+
+            // Get detailed class information based on rate type
+            $classes = [];
+            if ($filters['rate_type'] === 'all' || $filters['rate_type'] === 'punctuality') {
+                foreach ($allClasses as $class) {
+                    if (!$class->meet_link_accessed_at) {
+                        continue;
+                    }
+                    
+                    $classStartTime = \Carbon\Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+                    $joinedTime = \Carbon\Carbon::parse($class->meet_link_accessed_at);
+                    
+                    $status = 'on_time';
+                    $minutesLate = 0;
+                    
+                    if ($joinedTime->gt($classStartTime)) {
+                        $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                        if ($minutesLate <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'id' => $class->id,
+                        'type' => 'punctuality',
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $class->class_date->format('Y-m-d'),
+                        'start_time' => $class->start_time->format('H:i:s'),
+                        'joined_time' => $joinedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_late' => $minutesLate,
+                    ];
+                }
+            }
+
+            if ($filters['rate_type'] === 'all' || $filters['rate_type'] === 'report_submission') {
+                foreach ($allClasses as $class) {
+                    if (!$class->report_submitted_at) {
+                        continue;
+                    }
+                    
+                    $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+                    $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+                    
+                    $status = 'immediate';
+                    $minutesAfterEnd = 0;
+                    
+                    if ($reportSubmittedTime->gt($classEndTime)) {
+                        $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                        if ($minutesAfterEnd <= 5) {
+                            $status = 'immediate';
+                        } elseif ($minutesAfterEnd <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'id' => $class->id,
+                        'type' => 'report_submission',
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $class->class_date->format('Y-m-d'),
+                        'end_time' => $class->end_time->format('H:i:s'),
+                        'submitted_time' => $reportSubmittedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_after_end' => $minutesAfterEnd,
+                    ];
+                }
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'teacher' => [
+                        'id' => $teacher->id,
+                        'name' => $teacher->user->name ?? 'N/A',
+                        'email' => $teacher->user->email ?? 'N/A',
+                    ],
+                    'punctuality' => $punctualityData,
+                    'report_submission' => $reportSubmissionData,
+                    'attendance' => $attendanceData,
+                    'classes' => $classes,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Calculate punctuality rate
+     */
+    private function calculatePunctualityRate($classes): array
+    {
+        $onTime = 0;
+        $late = 0;
+        $veryLate = 0;
+        $totalJoined = 0;
+
+        foreach ($classes as $class) {
+            if (!$class->meet_link_accessed_at) {
+                continue;
+            }
+
+            $totalJoined++;
+            $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+            $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+            
+            if ($joinedTime->lte($classStartTime)) {
+                $onTime++;
+            } else {
+                $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                if ($minutesLate <= 10) {
+                    $late++;
+                } else {
+                    $veryLate++;
+                }
+            }
+        }
+
+        $punctualityRate = $totalJoined > 0 
+            ? round(($onTime / $totalJoined) * 100, 2) 
+            : 0;
+
+        $punctualityScore = $totalJoined > 0
+            ? round((($onTime * 100) + ($late * 50) + ($veryLate * 0)) / $totalJoined, 2)
+            : 0;
+
+        return [
+            'rate' => $punctualityRate,
+            'score' => $punctualityScore,
+            'on_time' => $onTime,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_joined' => $totalJoined,
+        ];
+    }
+
+    /**
+     * Calculate report submission rate
+     */
+    private function calculateReportSubmissionRate($classes): array
+    {
+        $immediate = 0;
+        $late = 0;
+        $veryLate = 0;
+        $totalReports = 0;
+
+        foreach ($classes as $class) {
+            if (!$class->report_submitted_at) {
+                continue;
+            }
+
+            $totalReports++;
+            $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+            $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+            
+            if ($reportSubmittedTime->lte($classEndTime)) {
+                $immediate++;
+            } else {
+                $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                if ($minutesAfterEnd <= 5) {
+                    $immediate++;
+                } elseif ($minutesAfterEnd <= 10) {
+                    $late++;
+                } else {
+                    $veryLate++;
+                }
+            }
+        }
+
+        $reportSubmissionRate = $totalReports > 0 
+            ? round(($immediate / $totalReports) * 100, 2) 
+            : 0;
+
+        $reportSubmissionScore = $totalReports > 0
+            ? round((($immediate * 100) + ($late * 70) + ($veryLate * 40)) / $totalReports, 2)
+            : 0;
+
+        return [
+            'rate' => $reportSubmissionRate,
+            'score' => $reportSubmissionScore,
+            'immediate' => $immediate,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_reports' => $totalReports,
+        ];
+    }
+
+    /**
+     * Calculate attendance rate
+     */
+    private function calculateAttendanceRate($classes): array
+    {
+        $attended = 0;
+        $cancelledByStudent = 0;
+        $total = $classes->count();
+
+        foreach ($classes as $class) {
+            if ($class->status === 'attended') {
+                $attended++;
+            } elseif ($class->status === 'cancelled_by_student') {
+                $cancelledByStudent++;
+            }
+        }
+
+        // Attendance rate = (attended + cancelled_by_student) / total * 100
+        // This means classes that were either attended or cancelled by student (not by teacher) count as "good attendance"
+        $attendanceRate = $total > 0 
+            ? round((($attended + $cancelledByStudent) / $total) * 100, 2) 
+            : 0;
+
+        // Score: attended = 100, cancelled_by_student = 80, others = 0
+        $attendanceScore = $total > 0
+            ? round((($attended * 100) + ($cancelledByStudent * 80)) / $total, 2)
+            : 0;
+
+        return [
+            'rate' => $attendanceRate,
+            'score' => $attendanceScore,
+            'attended' => $attended,
+            'cancelled_by_student' => $cancelledByStudent,
+            'total' => $total,
+        ];
+    }
+
+    /**
+     * Download teacher rate details as PDF
+     */
+    public function downloadRateDetailsPdf(Request $request, string $id)
+    {
+        try {
+            $teacher = Teacher::findOrFail($id);
+            
+            $filters = [
+                'status' => $request->input('status', 'all'),
+                'date_from' => $request->input('date_from'),
+                'date_to' => $request->input('date_to'),
+                'rate_type' => $request->input('rate_type', 'all'),
+            ];
+
+            // Get all classes for the teacher
+            $query = ClassInstance::where('teacher_id', $teacher->id);
+
+            // Apply date filters
+            if ($filters['date_from']) {
+                $query->whereDate('class_date', '>=', $filters['date_from']);
+            }
+            if ($filters['date_to']) {
+                $query->whereDate('class_date', '<=', $filters['date_to']);
+            }
+
+            $allClasses = $query->with(['student', 'course'])->get();
+
+            // Calculate cumulative rates
+            $punctualityData = $this->calculatePunctualityRate($allClasses);
+            $reportSubmissionData = $this->calculateReportSubmissionRate($allClasses);
+            $attendanceData = $this->calculateAttendanceRate($allClasses);
+
+            // Get detailed class information
+            $classes = [];
+            if ($filters['rate_type'] === 'all' || $filters['rate_type'] === 'punctuality') {
+                foreach ($allClasses as $class) {
+                    if (!$class->meet_link_accessed_at) {
+                        continue;
+                    }
+                    
+                    $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+                    $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+                    
+                    $status = 'on_time';
+                    $minutesLate = 0;
+                    
+                    if ($joinedTime->gt($classStartTime)) {
+                        $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                        if ($minutesLate <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'type' => 'punctuality',
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $class->class_date->format('Y-m-d'),
+                        'start_time' => $class->start_time->format('H:i:s'),
+                        'joined_time' => $joinedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_late' => $minutesLate,
+                    ];
+                }
+            }
+
+            if ($filters['rate_type'] === 'all' || $filters['rate_type'] === 'report_submission') {
+                foreach ($allClasses as $class) {
+                    if (!$class->report_submitted_at) {
+                        continue;
+                    }
+                    
+                    $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+                    $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+                    
+                    $status = 'immediate';
+                    $minutesAfterEnd = 0;
+                    
+                    if ($reportSubmittedTime->gt($classEndTime)) {
+                        $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                        if ($minutesAfterEnd <= 5) {
+                            $status = 'immediate';
+                        } elseif ($minutesAfterEnd <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'type' => 'report_submission',
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $class->class_date->format('Y-m-d'),
+                        'end_time' => $class->end_time->format('H:i:s'),
+                        'submitted_time' => $reportSubmittedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_after_end' => $minutesAfterEnd,
+                    ];
+                }
+            }
+
+            $data = [
+                'teacher' => [
+                    'id' => $teacher->id,
+                    'name' => $teacher->user->name ?? 'N/A',
+                    'email' => $teacher->user->email ?? 'N/A',
+                ],
+                'punctuality' => $punctualityData,
+                'report_submission' => $reportSubmissionData,
+                'attendance' => $attendanceData,
+                'classes' => $classes,
+                'filters' => $filters,
+            ];
+
+            // Generate PDF using Spatie
+            $fileName = 'teacher-rates-' . $teacher->id . '-' . date('Y-m-d') . '.pdf';
+            $path = 'temp/' . $fileName;
+            $fullPath = storage_path('app/' . $path);
+            
+            // Ensure directory exists
+            if (!file_exists(dirname($fullPath))) {
+                mkdir(dirname($fullPath), 0755, true);
+            }
+            
+            try {
+                // Generate and save PDF
+                \Spatie\LaravelPdf\Facades\Pdf::view('pdf.teacher-rates', $data)
+                    ->format(\Spatie\LaravelPdf\Enums\Format::A4)
+                    ->orientation(\Spatie\LaravelPdf\Enums\Orientation::Landscape)
+                    ->save($fullPath);
+                
+                // Check if file exists using native PHP
+                if (!file_exists($fullPath)) {
+                    Log::error('PDF file not found at: ' . $fullPath);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'PDF file not found',
+                    ], 404);
+                }
+                
+                // Return the file as download
+                return response()->download($fullPath, $fileName, [
+                    'Content-Type' => 'application/pdf',
+                ])->deleteFileAfterSend(true);
+            } catch (\Exception $e) {
+                Log::error('PDF Generation Error: ' . $e->getMessage());
+                Log::error('Stack trace: ' . $e->getTraceAsString());
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to generate PDF: ' . $e->getMessage(),
+                ], 500);
+            }
         } catch (\Exception $e) {
             return response()->json([
                 'status' => 'error',

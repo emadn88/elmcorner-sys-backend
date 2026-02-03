@@ -24,7 +24,7 @@ class TimetableController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Timetable::with(['student', 'teacher', 'course']);
+        $query = Timetable::with(['student', 'teacher.user', 'course']);
 
         // Apply filters
         if ($request->has('student_id')) {
@@ -68,7 +68,7 @@ class TimetableController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Timetable created successfully',
-            'data' => $timetable->load(['student', 'teacher', 'course']),
+            'data' => $timetable->load(['student', 'teacher.user', 'course']),
         ], 201);
     }
 
@@ -77,7 +77,7 @@ class TimetableController extends Controller
      */
     public function show(int $id): JsonResponse
     {
-        $timetable = Timetable::with(['student', 'teacher', 'course', 'classes'])->findOrFail($id);
+        $timetable = Timetable::with(['student', 'teacher.user', 'course', 'classes'])->findOrFail($id);
 
         return response()->json([
             'status' => 'success',
@@ -91,12 +91,49 @@ class TimetableController extends Controller
     public function update(UpdateTimetableRequest $request, int $id): JsonResponse
     {
         $timetable = Timetable::findOrFail($id);
+        
+        // Store old data for comparison (optional, for future use)
+        $oldData = [
+            'student_id' => $timetable->student_id,
+            'teacher_id' => $timetable->teacher_id,
+            'course_id' => $timetable->course_id,
+            'days_of_week' => $timetable->days_of_week,
+            'time_slots' => $timetable->time_slots,
+            'student_timezone' => $timetable->student_timezone,
+            'teacher_timezone' => $timetable->teacher_timezone,
+            'time_difference_minutes' => $timetable->time_difference_minutes,
+        ];
+        
+        // Update the timetable
         $timetable->update($request->validated());
+        
+        // Sync future/pending classes with new timetable settings
+        // This updates only pending/waiting_list classes with dates >= today
+        // Past classes (attended, cancelled, etc.) are not modified to preserve data integrity
+        $syncResult = $this->timetableService->syncFutureClasses($id, $oldData);
+
+        $message = 'Timetable updated successfully';
+        $messageParts = [];
+        
+        if ($syncResult['updated'] > 0) {
+            $messageParts[] = sprintf('updated %d class(es)', $syncResult['updated']);
+        }
+        if ($syncResult['deleted'] > 0) {
+            $messageParts[] = sprintf('removed %d class(es)', $syncResult['deleted']);
+        }
+        if ($syncResult['generated'] > 0) {
+            $messageParts[] = sprintf('generated %d new class(es)', $syncResult['generated']);
+        }
+        
+        if (!empty($messageParts)) {
+            $message .= '. ' . ucfirst(implode(', ', $messageParts));
+        }
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Timetable updated successfully',
-            'data' => $timetable->fresh()->load(['student', 'teacher', 'course']),
+            'message' => $message,
+            'data' => $timetable->fresh()->load(['student', 'teacher.user', 'course']),
+            'sync_result' => $syncResult,
         ]);
     }
 
@@ -153,7 +190,7 @@ class TimetableController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Timetable paused successfully',
-            'data' => $timetable->load(['student', 'teacher', 'course']),
+            'data' => $timetable->load(['student', 'teacher.user', 'course']),
         ]);
     }
 
@@ -167,7 +204,23 @@ class TimetableController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Timetable resumed successfully',
-            'data' => $timetable->load(['student', 'teacher', 'course']),
+            'data' => $timetable->load(['student', 'teacher.user', 'course']),
+        ]);
+    }
+
+    /**
+     * Delete all pending classes for a timetable.
+     * Only deletes classes with status 'pending' or 'waiting_list'.
+     * Preserves attended, cancelled, and other completed classes.
+     */
+    public function deleteAllPendingClasses(int $id): JsonResponse
+    {
+        $result = $this->timetableService->deleteAllPendingClasses($id);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => sprintf('Deleted %d pending class(es) successfully', $result['deleted']),
+            'data' => $result,
         ]);
     }
 }

@@ -31,6 +31,7 @@ class StoreTimetableRequest extends FormRequest
             'time_slots.*.end' => 'required|date_format:H:i|after:time_slots.*.start',
             'student_timezone' => 'required|string|max:255',
             'teacher_timezone' => 'required|string|max:255',
+            'time_difference_minutes' => 'sometimes|integer',
             'status' => 'sometimes|in:active,paused,stopped',
         ];
     }

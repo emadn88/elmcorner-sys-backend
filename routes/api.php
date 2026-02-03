@@ -95,6 +95,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/teachers/{id}/monthly-stats', [TeacherController::class, 'monthlyStats']);
         Route::get('/teachers/{id}/weekly-schedule', [TeacherController::class, 'getWeeklySchedule']);
         Route::get('/teachers/{id}/credentials', [TeacherController::class, 'getCredentials']);
+        Route::get('/teachers/{id}/rate-details', [TeacherController::class, 'getRateDetails']);
+        Route::get('/teachers/{id}/rate-details/pdf', [TeacherController::class, 'downloadRateDetailsPdf']);
         Route::post('/teachers/{id}/send-credentials-whatsapp', [TeacherController::class, 'sendCredentialsWhatsApp']);
         Route::put('/teachers/{id}', [TeacherController::class, 'update']);
         Route::delete('/teachers/{id}', [TeacherController::class, 'destroy']);
@@ -118,9 +120,11 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/timetables/{id}/generate-classes', [TimetableController::class, 'generateClasses']);
         Route::post('/timetables/{id}/pause', [TimetableController::class, 'pause']);
         Route::post('/timetables/{id}/resume', [TimetableController::class, 'resume']);
+        Route::delete('/timetables/{id}/pending-classes', [TimetableController::class, 'deleteAllPendingClasses']);
         
         // Classes routes
         Route::get('/classes', [ClassController::class, 'index']);
+        Route::get('/classes/export/pdf', [ClassController::class, 'exportPdf']);
         Route::get('/classes/{id}', [ClassController::class, 'show']);
         Route::put('/classes/{id}/status', [ClassController::class, 'updateStatus']);
         Route::put('/classes/{id}', [ClassController::class, 'update']);
@@ -156,8 +160,10 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/packages/{id}/bills', [PackageController::class, 'bills']);
         Route::get('/packages/{id}/pdf', [PackageController::class, 'downloadPdf']);
         Route::get('/packages/{id}/classes', [PackageController::class, 'getPackageClasses']);
+        Route::get('/packages/{id}/notification-history', [PackageController::class, 'notificationHistory']);
         Route::post('/packages/{id}/notify', [PackageController::class, 'notify']);
         Route::post('/packages/{id}/reactivate', [PackageController::class, 'reactivate']);
+        Route::post('/packages/{id}/mark-paid', [PackageController::class, 'markAsPaid']);
         Route::apiResource('packages', PackageController::class);
         
         // Activity routes
@@ -180,6 +186,7 @@ Route::middleware('auth:api')->group(function () {
         // Notifications routes
         Route::prefix('notifications')->group(function () {
             Route::get('/', [NotificationController::class, 'index']);
+            Route::get('/class-cancellations/all', [NotificationController::class, 'getAllCancellationRequests']);
             Route::put('/class-cancellation/{id}/approve', [NotificationController::class, 'approveCancellation']);
             Route::put('/class-cancellation/{id}/reject', [NotificationController::class, 'rejectCancellation']);
         });
@@ -252,6 +259,7 @@ Route::middleware('auth:api')->group(function () {
     // Teacher panel routes (accessible only to teachers)
     Route::prefix('teacher')->middleware('auth:api')->group(function () {
         Route::get('/dashboard', [TeacherPanelController::class, 'dashboard']);
+        Route::get('/monthly-rate-details', [TeacherPanelController::class, 'getMonthlyRateDetails']);
         Route::get('/classes', [TeacherPanelController::class, 'getClasses']);
         Route::get('/classes/{id}', [TeacherPanelController::class, 'getClass']);
         Route::put('/classes/{id}/status', [TeacherPanelController::class, 'updateClassStatus']);
@@ -259,6 +267,8 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/classes/{id}/end', [TeacherPanelController::class, 'endClass']);
         Route::put('/classes/{id}', [TeacherPanelController::class, 'updateClassDetails']);
         Route::post('/classes/{id}/cancel', [TeacherPanelController::class, 'cancelClass']);
+        Route::post('/classes/{id}/report', [TeacherPanelController::class, 'submitClassReport']);
+        Route::post('/classes/{id}/cancel-request', [TeacherPanelController::class, 'requestClassCancellation']);
         Route::get('/students', [TeacherPanelController::class, 'getStudents']);
         Route::get('/duties', [TeacherPanelController::class, 'duties']);
         Route::get('/profile', [TeacherPanelController::class, 'profile']);

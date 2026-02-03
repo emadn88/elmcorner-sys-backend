@@ -21,6 +21,9 @@ class ClassInstance extends Model
         'class_date',
         'start_time',
         'end_time',
+        'student_date',
+        'student_start_time',
+        'student_end_time',
         'duration',
         'status',
         'cancelled_by',
@@ -28,9 +31,12 @@ class ClassInstance extends Model
         'notes',
         'student_evaluation',
         'class_report',
+        'report_submitted_at',
         'meet_link_used',
         'meet_link_accessed_at',
         'cancellation_request_status',
+        'admin_rejection_reason',
+        'reminder_2hours_before_sent',
         'reminder_5min_before_sent',
         'reminder_start_time_sent',
         'reminder_5min_after_sent',
@@ -40,11 +46,16 @@ class ClassInstance extends Model
         'class_date' => 'date',
         'start_time' => 'datetime',
         'end_time' => 'datetime',
+        'student_date' => 'date',
+        'student_start_time' => 'datetime',
+        'student_end_time' => 'datetime',
         'duration' => 'integer',
         'status' => 'string',
         'meet_link_used' => 'boolean',
         'meet_link_accessed_at' => 'datetime',
+        'report_submitted_at' => 'datetime',
         'cancellation_request_status' => 'string',
+        'reminder_2hours_before_sent' => 'boolean',
         'reminder_5min_before_sent' => 'boolean',
         'reminder_start_time_sent' => 'boolean',
         'reminder_5min_after_sent' => 'boolean',
@@ -116,6 +127,32 @@ class ClassInstance extends Model
                 $array['end_time'] = Carbon::parse($this->attributes['end_time'])->format('H:i:s');
             } catch (\Exception $e) {
                 $array['end_time'] = $this->attributes['end_time'];
+            }
+        }
+        
+        // Format student_start_time and student_end_time if they exist
+        if (isset($this->attributes['student_start_time'])) {
+            try {
+                $array['student_start_time'] = Carbon::parse($this->attributes['student_start_time'])->format('H:i:s');
+            } catch (\Exception $e) {
+                $array['student_start_time'] = $this->attributes['student_start_time'];
+            }
+        }
+        
+        if (isset($this->attributes['student_end_time'])) {
+            try {
+                $array['student_end_time'] = Carbon::parse($this->attributes['student_end_time'])->format('H:i:s');
+            } catch (\Exception $e) {
+                $array['student_end_time'] = $this->attributes['student_end_time'];
+            }
+        }
+        
+        // Format student_date if it exists
+        if (isset($this->attributes['student_date'])) {
+            try {
+                $array['student_date'] = Carbon::parse($this->attributes['student_date'])->format('Y-m-d');
+            } catch (\Exception $e) {
+                $array['student_date'] = $this->attributes['student_date'];
             }
         }
         

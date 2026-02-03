@@ -25,6 +25,8 @@ return [
         'phone' => env('WHATSAPP_MONITORING_PHONE', '+19406182531'),
     ],
 
+    'support_phone' => env('WHATSAPP_SUPPORT_PHONE', '+19406182531'),
+
     'templates' => [
         'lesson_reminder' => 'تذكير: لديك درس اليوم الساعة {time}',
         'package_finished' => 'انتهت الحصص! للتجديد، اضغط هنا: {link}',

@@ -23,7 +23,7 @@ class ReminderService
     public function sendTrialReminder(TrialClass $trial, string $reminderType): bool
     {
         try {
-            $trial->load(['student', 'teacher.user', 'course']);
+            $trial->load(['student', 'teacher.user', 'course', 'teacher']);
             
             $studentPhone = $trial->student->whatsapp;
             $teacherPhone = $trial->teacher->user->whatsapp ?? null;
@@ -36,20 +36,21 @@ class ReminderService
                 return false;
             }
 
-            $message = $this->getTrialReminderMessage($trial, $reminderType);
             $success = true;
 
-            // Send to student
+            // Send to student with student time
             if ($studentPhone) {
-                $sent = $this->whatsappService->sendMessage($studentPhone, $message);
+                $studentMessage = $this->getTrialReminderMessage($trial, $reminderType, 'student');
+                $sent = $this->whatsappService->sendMessage($studentPhone, $studentMessage);
                 if (!$sent) {
                     $success = false;
                 }
             }
 
-            // Send to teacher
+            // Send to teacher with teacher time and zoom link
             if ($teacherPhone) {
-                $sent = $this->whatsappService->sendMessage($teacherPhone, $message);
+                $teacherMessage = $this->getTrialReminderMessage($trial, $reminderType, 'teacher');
+                $sent = $this->whatsappService->sendMessage($teacherPhone, $teacherMessage);
                 if (!$sent) {
                     $success = false;
                 }
@@ -67,12 +68,45 @@ class ReminderService
     }
 
     /**
+     * Send reminder for a trial to student only
+     */
+    public function sendTrialReminderToStudentOnly(TrialClass $trial, string $reminderType): bool
+    {
+        try {
+            $trial->load(['student', 'teacher.user', 'course', 'teacher']);
+            
+            $studentPhone = $trial->student->whatsapp;
+
+            if (!$studentPhone) {
+                Log::warning('No WhatsApp number found for student trial reminder', [
+                    'trial_id' => $trial->id,
+                    'reminder_type' => $reminderType,
+                ]);
+                return false;
+            }
+
+            // Send to student only
+            $studentMessage = $this->getTrialReminderMessage($trial, $reminderType, 'student');
+            $sent = $this->whatsappService->sendMessage($studentPhone, $studentMessage);
+
+            return $sent;
+        } catch (\Exception $e) {
+            Log::error('Failed to send student-only trial reminder', [
+                'trial_id' => $trial->id,
+                'reminder_type' => $reminderType,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Send reminder for a class
      */
     public function sendClassReminder(ClassInstance $class, string $reminderType): bool
     {
         try {
-            $class->load(['student', 'teacher.user', 'course']);
+            $class->load(['student', 'teacher.user', 'course', 'teacher']);
             
             $studentPhone = $class->student->whatsapp;
             $teacherPhone = $class->teacher->user->whatsapp ?? null;
@@ -85,20 +119,21 @@ class ReminderService
                 return false;
             }
 
-            $message = $this->getClassReminderMessage($class, $reminderType);
             $success = true;
 
-            // Send to student
+            // Send to student with student time
             if ($studentPhone) {
-                $sent = $this->whatsappService->sendMessage($studentPhone, $message);
+                $studentMessage = $this->getClassReminderMessage($class, $reminderType, 'student');
+                $sent = $this->whatsappService->sendMessage($studentPhone, $studentMessage);
                 if (!$sent) {
                     $success = false;
                 }
             }
 
-            // Send to teacher
+            // Send to teacher with teacher time and system link
             if ($teacherPhone) {
-                $sent = $this->whatsappService->sendMessage($teacherPhone, $message);
+                $teacherMessage = $this->getClassReminderMessage($class, $reminderType, 'teacher');
+                $sent = $this->whatsappService->sendMessage($teacherPhone, $teacherMessage);
                 if (!$sent) {
                     $success = false;
                 }
@@ -116,27 +151,217 @@ class ReminderService
     }
 
     /**
+     * Send reminder for a class to student only
+     */
+    public function sendClassReminderToStudentOnly(ClassInstance $class, string $reminderType): bool
+    {
+        try {
+            $class->load(['student', 'teacher.user', 'course', 'teacher']);
+            
+            $studentPhone = $class->student->whatsapp;
+
+            if (!$studentPhone) {
+                Log::warning('No WhatsApp number found for student class reminder', [
+                    'class_id' => $class->id,
+                    'reminder_type' => $reminderType,
+                ]);
+                return false;
+            }
+
+            // Send to student only
+            $studentMessage = $this->getClassReminderMessage($class, $reminderType, 'student');
+            $sent = $this->whatsappService->sendMessage($studentPhone, $studentMessage);
+
+            return $sent;
+        } catch (\Exception $e) {
+            Log::error('Failed to send student-only class reminder', [
+                'class_id' => $class->id,
+                'reminder_type' => $reminderType,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Get reminder message for trial
      */
-    protected function getTrialReminderMessage(TrialClass $trial, string $reminderType): string
+    protected function getTrialReminderMessage(TrialClass $trial, string $reminderType, string $recipient = 'student'): string
     {
         $courseName = $trial->course->name ?? 'الدورة';
         $teacherName = $trial->teacher->user->name ?? 'المعلم';
-        $date = $trial->trial_date->format('Y-m-d');
-        $time = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
+        $studentName = $trial->student->full_name ?? 'الطالب';
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        $meetLink = $trial->teacher->meet_link ?? '';
+        
+        // Get student language for translation
+        $studentLanguage = 'ar'; // Default to Arabic
+        if ($recipient === 'student') {
+            try {
+                $student = \App\Models\Student::find($trial->student_id);
+                if ($student && isset($student->language)) {
+                    $studentLanguage = strtolower(trim((string)$student->language));
+                    if (empty($studentLanguage) || !in_array($studentLanguage, ['ar', 'en', 'fr'])) {
+                        $studentLanguage = 'ar';
+                    }
+                }
+            } catch (\Exception $e) {
+                // Default to Arabic on error
+                $studentLanguage = 'ar';
+            }
+        }
+        
+        // Get time based on recipient
+        if ($recipient === 'student' && $trial->student_date && $trial->student_start_time) {
+            $date = $trial->student_date instanceof \Carbon\Carbon 
+                ? $trial->student_date->format('Y-m-d')
+                : $trial->student_date;
+            $startTime = is_string($trial->student_start_time) 
+                ? $trial->student_start_time 
+                : Carbon::parse($trial->student_start_time)->format('H:i');
+            // Format time to 12-hour format
+            $timeParts = explode(':', $startTime);
+            $hour = (int)$timeParts[0];
+            $minute = $timeParts[1] ?? '00';
+            $ampm = $hour >= 12 ? 'PM' : 'AM';
+            $hour12 = $hour % 12 ?: 12;
+            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        } else {
+            // Use teacher time
+            if ($trial->teacher_date && $trial->teacher_start_time) {
+                $date = $trial->teacher_date instanceof \Carbon\Carbon 
+                    ? $trial->teacher_date->format('Y-m-d')
+                    : $trial->teacher_date;
+                $startTime = is_string($trial->teacher_start_time) 
+                    ? $trial->teacher_start_time 
+                    : Carbon::parse($trial->teacher_start_time)->format('H:i');
+            } else {
+                $date = $trial->trial_date->format('Y-m-d');
+                $startTime = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
+            }
+            // Format time to 12-hour format
+            $timeParts = explode(':', $startTime);
+            $hour = (int)$timeParts[0];
+            $minute = $timeParts[1] ?? '00';
+            $ampm = $hour >= 12 ? 'PM' : 'AM';
+            $hour12 = $hour % 12 ?: 12;
+            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        }
 
-        switch ($reminderType) {
-            case '5min_before':
-                return "تذكير: لديك تجربة في {$courseName} بعد 5 دقائق مع {$teacherName} في {$date} الساعة {$time}";
+        // Get status message based on recipient and reminder type
+        $statusMessage = $this->getReminderStatusMessage($reminderType, $recipient, $studentName, $studentLanguage);
+        
+        $academyName = config('app.name', 'Elm Corner Academy');
+
+        // Generate message based on language
+        if ($studentLanguage === 'en' && $recipient === 'student') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *Teacher:* {$teacherName}\n";
+            $message .= "📚 *Course:* {$courseName}\n";
+            $message .= "🕐 *Time:* {$time}\n";
             
-            case 'start_time':
-                return "تذكير: تجربتك في {$courseName} مع {$teacherName} تبدأ الآن";
+            if ($meetLink) {
+                $message .= "\n🔗 *Zoom Link:*\n{$meetLink}";
+            }
             
-            case '5min_after':
-                return "تذكير: تجربتك في {$courseName} بدأت منذ 5 دقائق. يرجى التأكد من الدخول";
+            $message .= "\n\n💬 *WhatsApp Support:* {$supportPhone}";
             
-            default:
-                return "تذكير: لديك تجربة في {$courseName} مع {$teacherName}";
+            return $message;
+        } elseif ($studentLanguage === 'fr' && $recipient === 'student') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *Professeur:* {$teacherName}\n";
+            $message .= "📚 *Cours:* {$courseName}\n";
+            $message .= "🕐 *Heure:* {$time}\n";
+            
+            if ($meetLink) {
+                $message .= "\n🔗 *Lien Zoom:*\n{$meetLink}";
+            }
+            
+            $message .= "\n\n💬 *Support WhatsApp:* {$supportPhone}";
+            
+            return $message;
+        } else {
+            // Arabic (default) or teacher messages
+            $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *المعلم:* {$teacherName}\n";
+            $message .= "📚 *الدورة:* {$courseName}\n";
+            $message .= "🕐 *الوقت:* {$time}\n";
+            
+            if ($meetLink) {
+                $message .= "\n🔗 *رابط الزوم:*\n{$meetLink}";
+            }
+            
+            $message .= "\n\n💬 *واتساب الدعم:* {$supportPhone}";
+            
+            return $message;
+        }
+    }
+
+    /**
+     * Get reminder status message based on type and recipient
+     */
+    protected function getReminderStatusMessage(string $reminderType, string $recipient, string $studentName, string $language = 'ar'): string
+    {
+        if ($recipient === 'student') {
+            // Student messages - translate based on language
+            switch ($reminderType) {
+                case '2hours_before':
+                    if ($language === 'en') {
+                        return "Your trial class will start in 2 hours";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours d'essai commencera dans 2 heures";
+                    } else {
+                        return "الحصة التجريبية الخاصة بك ستبدأ بعد ساعتين";
+                    }
+                
+                case '5min_before':
+                    if ($language === 'en') {
+                        return "Your trial class will start soon";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours d'essai va commencer bientôt";
+                    } else {
+                        return "الحصة التجريبية الخاصة بك ستبدأ قريبا";
+                    }
+                
+                case 'start_time':
+                    if ($language === 'en') {
+                        return "Your trial class has started. The teacher is waiting";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours d'essai a commencé. Le professeur attend";
+                    } else {
+                        return "الحصة التجريبية الخاصه بك بدأت المعلم في الانتظار";
+                    }
+                
+                case '5min_after':
+                    if ($language === 'en') {
+                        return "Your trial class started minutes ago. The teacher is waiting";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours d'essai a commencé il y a quelques minutes. Le professeur attend";
+                    } else {
+                        return "الحصة التجريبيه بدأت منذ دقائق المعلم في الانتظار";
+                    }
+                
+                default:
+                    return "الحصة التجريبية الخاصة بك ستبدأ قريبا";
+            }
+        } else {
+            // Teacher messages - always in Arabic
+            switch ($reminderType) {
+                case '5min_before':
+                    return "الحصة التجريبية للطالب {$studentName} ستبدأ قريبا";
+                
+                case 'start_time':
+                    return "الحصة التجريبية الخاصه بالطالب {$studentName} بدأت";
+                
+                case '5min_after':
+                    return "الحصة التجريبيه الخاصه بالطالب {$studentName} بدأت منذ دقايق";
+                
+                default:
+                    return "الحصة التجريبية للطالب {$studentName} ستبدأ قريبا";
+            }
         }
     }
 
@@ -464,27 +689,24 @@ class ReminderService
         
         // Get trial notes/description
         $trialNotes = $trial->notes ?? '';
+        $academyName = config('app.name', 'Elm Corner Academy');
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
 
-        $message = "🎉 *تم جدولة حصة تجريبية جديدة*\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
+        $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+        $message .= "🎉 *تم جدولة حصة تجريبية جديدة*\n\n";
         $message .= "📚 *الدورة:* {$courseName}\n";
         $message .= "👤 *الطالب:* {$studentName}\n";
-        $message .= "👨‍🏫 *المعلم:* {$teacherName}\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "📅 *التاريخ:* {$date}\n";
         $message .= "⏰ *الوقت:* {$time} - {$endTime}\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "✅ تم تأكيد الجدولة بنجاح\n";
-        $message .= "📱 سيتم إرسال تذكير في وقت الحصة\n\n";
+        $message .= "📱 سيتم إرسال تذكير في وقت الحصة";
         
         // Add trial notes/description if available
         if (!empty($trial->notes)) {
-            $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-            $message .= "📝 *التفاصيل:*\n";
-            $message .= $trial->notes . "\n\n";
+            $message .= "\n\n📝 *التفاصيل:*\n{$trial->notes}";
         }
         
-        $message .= "وفقكم الله 🌟";
+        $message .= "\n\n💬 *واتساب الدعم:* {$supportPhone}";
 
         return $message;
     }
@@ -494,25 +716,21 @@ class ReminderService
      */
     protected function getArabicStudentMessage(string $studentName, string $teacherName, string $country, string $date, string $time, string $endTime): string
     {
+        $academyName = config('app.name', 'Elm Corner Academy');
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        
         $dateObj = Carbon::parse($date);
         $dayName = $this->getArabicDayName($dateObj->dayOfWeek);
         $monthName = $this->getArabicMonthName($dateObj->month);
         $formattedDate = "{$dayName}، {$dateObj->day} {$monthName} {$dateObj->year}";
         
-        $message = "🎉 *تم حجز حصتك التجريبية بنجاح*\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-        $message .= "👤 *الطالب:* {$studentName}\n";
+        $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+        $message .= "🎉 *تم حجز حصتك التجريبية بنجاح*\n\n";
         $message .= "👨‍🏫 *المعلم:* {$teacherName}\n";
-        if ($country) {
-            $message .= "🌍 *البلد:* {$country}\n";
-        }
-        $message .= "\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "📅 *التاريخ:* {$formattedDate}\n";
         $message .= "⏰ *الوقت:* {$time} - {$endTime}\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "✅ *بإذن الله*، سيتم إرسال رابط الزوم في وقت الحصة\n\n";
-        $message .= "جزاك الله خيراً 🌟";
+        $message .= "💬 *واتساب الدعم:* {$supportPhone}";
 
         return $message;
     }
@@ -522,23 +740,19 @@ class ReminderService
      */
     protected function getEnglishStudentMessage(string $studentName, string $teacherName, string $country, string $date, string $time, string $endTime): string
     {
+        $academyName = config('app.name', 'Elm Corner Academy');
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        
         $dateObj = Carbon::parse($date);
         $formattedDate = $dateObj->format('l, F j, Y');
         
-        $message = "🎉 *Your free trial is Scheduled*\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-        $message .= "👤 *Student:* {$studentName}\n";
+        $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+        $message .= "🎉 *Your Free Trial is Scheduled*\n\n";
         $message .= "👨‍🏫 *Teacher:* {$teacherName}\n";
-        if ($country) {
-            $message .= "🌍 *Country:* {$country}\n";
-        }
-        $message .= "\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "📅 *Date:* {$formattedDate}\n";
         $message .= "⏰ *Time:* {$time} - {$endTime}\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "✅ *Insha'Allah*, the Zoom link will be sent at the time of the class\n\n";
-        $message .= "May Allah reward you 🌟";
+        $message .= "💬 *WhatsApp Support:* {$supportPhone}";
 
         return $message;
     }
@@ -548,23 +762,19 @@ class ReminderService
      */
     protected function getFrenchStudentMessage(string $studentName, string $teacherName, string $country, string $date, string $time, string $endTime): string
     {
+        $academyName = config('app.name', 'Elm Corner Academy');
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        
         $dateObj = Carbon::parse($date);
         $formattedDate = $dateObj->locale('fr')->translatedFormat('l j F Y');
         
-        $message = "🎉 *Votre essai gratuit est programmé*\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
-        $message .= "👤 *Étudiant:* {$studentName}\n";
+        $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+        $message .= "🎉 *Votre Essai Gratuit est Programmé*\n\n";
         $message .= "👨‍🏫 *Professeur:* {$teacherName}\n";
-        if ($country) {
-            $message .= "🌍 *Pays:* {$country}\n";
-        }
-        $message .= "\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "📅 *Date:* {$formattedDate}\n";
         $message .= "⏰ *Heure:* {$time} - {$endTime}\n\n";
-        $message .= "━━━━━━━━━━━━━━━━━━━━\n\n";
         $message .= "✅ *Insha'Allah*, le lien Zoom sera envoyé à l'heure du cours\n\n";
-        $message .= "Qu'Allah vous récompense 🌟";
+        $message .= "💬 *Support WhatsApp:* {$supportPhone}";
 
         return $message;
     }
@@ -611,25 +821,205 @@ class ReminderService
     /**
      * Get reminder message for class
      */
-    protected function getClassReminderMessage(ClassInstance $class, string $reminderType): string
+    protected function getClassReminderMessage(ClassInstance $class, string $reminderType, string $recipient = 'student'): string
     {
         $courseName = $class->course->name ?? 'الدورة';
         $teacherName = $class->teacher->user->name ?? 'المعلم';
-        $date = $class->class_date->format('Y-m-d');
-        $time = is_string($class->start_time) ? $class->start_time : Carbon::parse($class->start_time)->format('H:i');
+        $studentName = $class->student->full_name ?? 'الطالب';
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        $meetLink = $class->teacher->meet_link ?? '';
+        
+        // Get student language for translation
+        $studentLanguage = 'ar'; // Default to Arabic
+        if ($recipient === 'student') {
+            try {
+                $student = \App\Models\Student::find($class->student_id);
+                if ($student && isset($student->language)) {
+                    $studentLanguage = strtolower(trim((string)$student->language));
+                    if (empty($studentLanguage) || !in_array($studentLanguage, ['ar', 'en', 'fr'])) {
+                        $studentLanguage = 'ar';
+                    }
+                }
+            } catch (\Exception $e) {
+                // Default to Arabic on error
+                $studentLanguage = 'ar';
+            }
+        }
+        
+        // Get time based on recipient
+        if ($recipient === 'student' && $class->student_date && $class->student_start_time) {
+            $date = $class->student_date instanceof \Carbon\Carbon 
+                ? $class->student_date->format('Y-m-d')
+                : $class->student_date;
+            $startTime = is_string($class->student_start_time) 
+                ? $class->student_start_time 
+                : Carbon::parse($class->student_start_time)->format('H:i');
+            // Format time to 12-hour format
+            $timeParts = explode(':', $startTime);
+            $hour = (int)$timeParts[0];
+            $minute = $timeParts[1] ?? '00';
+            $ampm = $hour >= 12 ? 'PM' : 'AM';
+            $hour12 = $hour % 12 ?: 12;
+            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        } else {
+            // Use teacher time
+            $classDate = $class->class_date instanceof \Carbon\Carbon 
+                ? $class->class_date 
+                : Carbon::parse($class->class_date);
+            $date = $classDate->format('Y-m-d');
+            $startTime = is_string($class->start_time) 
+                ? Carbon::parse($class->start_time)->format('H:i')
+                : Carbon::parse($class->start_time)->format('H:i');
+            // Format time to 12-hour format
+            $timeParts = explode(':', $startTime);
+            $hour = (int)$timeParts[0];
+            $minute = $timeParts[1] ?? '00';
+            $ampm = $hour >= 12 ? 'PM' : 'AM';
+            $hour12 = $hour % 12 ?: 12;
+            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        }
 
-        switch ($reminderType) {
-            case '5min_before':
-                return "تذكير: لديك حصة في {$courseName} بعد 5 دقائق مع {$teacherName} في {$date} الساعة {$time}";
+        // Get status message based on recipient and reminder type
+        $statusMessage = $this->getClassReminderStatusMessage($reminderType, $recipient, $studentName, $studentLanguage);
+        
+        $academyName = config('app.name', 'Elm Corner Academy');
+
+        // Generate message based on language
+        if ($studentLanguage === 'en' && $recipient === 'student') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *Teacher:* {$teacherName}\n";
+            $message .= "📚 *Course:* {$courseName}\n";
+            $message .= "🕐 *Time:* {$time}\n";
             
-            case 'start_time':
-                return "تذكير: حصتك في {$courseName} مع {$teacherName} تبدأ الآن";
+            if ($meetLink) {
+                $message .= "\n🔗 *Zoom Link:*\n{$meetLink}";
+            }
             
-            case '5min_after':
-                return "تذكير: حصتك في {$courseName} بدأت منذ 5 دقائق. يرجى التأكد من الدخول";
+            $message .= "\n\n💬 *WhatsApp Support:* {$supportPhone}";
             
-            default:
-                return "تذكير: لديك حصة في {$courseName} مع {$teacherName}";
+            return $message;
+        } elseif ($studentLanguage === 'fr' && $recipient === 'student') {
+            $message = "🎓 *ELM CORNER ACADEMY*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *Professeur:* {$teacherName}\n";
+            $message .= "📚 *Cours:* {$courseName}\n";
+            $message .= "🕐 *Heure:* {$time}\n";
+            
+            if ($meetLink) {
+                $message .= "\n🔗 *Lien Zoom:*\n{$meetLink}";
+            }
+            
+            $message .= "\n\n💬 *Support WhatsApp:* {$supportPhone}";
+            
+            return $message;
+        } elseif ($recipient === 'teacher') {
+            // Teacher messages - always in Arabic with system link and credentials
+            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $systemLink = rtrim($frontendUrl, '/') . '/login';
+            $user = $class->teacher->user;
+            $email = $user->email ?? '';
+            $password = $user->plain_password ?? 'Not available';
+            
+            $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "📚 *الدورة:* {$courseName}\n";
+            $message .= "👤 *الطالب:* {$studentName}\n";
+            $message .= "🕐 *الوقت:* {$time}\n\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "🔗 *رابط النظام:*\n";
+            $message .= "{$systemLink}\n\n";
+            $message .= "📋 *بيانات الدخول:*\n";
+            $message .= "📧 *البريد:* {$email}\n";
+            $message .= "🔐 *كلمة المرور:* {$password}\n\n";
+            $message .= "⚠️ *يرجى تسجيل الدخول إلى حسابك وبدء الحصة من هناك*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "💬 *واتساب الدعم:* {$supportPhone}";
+            
+            return $message;
+        } else {
+            // Arabic (default) for students
+            $message = "🎓 *أكاديمية إلم كورنر*\n\n";
+            $message .= "{$statusMessage}\n\n";
+            $message .= "👨‍🏫 *المعلم:* {$teacherName}\n";
+            $message .= "📚 *الدورة:* {$courseName}\n";
+            $message .= "🕐 *الوقت:* {$time}\n";
+            
+            if ($meetLink) {
+                $message .= "\n🔗 *رابط الزوم:*\n{$meetLink}";
+            }
+            
+            $message .= "\n\n💬 *واتساب الدعم:* {$supportPhone}";
+            
+            return $message;
+        }
+    }
+
+    /**
+     * Get class reminder status message based on type and recipient
+     */
+    protected function getClassReminderStatusMessage(string $reminderType, string $recipient, string $studentName, string $language = 'ar'): string
+    {
+        if ($recipient === 'student') {
+            // Student messages - translate based on language
+            switch ($reminderType) {
+                case '2hours_before':
+                    if ($language === 'en') {
+                        return "Your class will start in 2 hours";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours commencera dans 2 heures";
+                    } else {
+                        return "حصتك ستبدأ بعد ساعتين";
+                    }
+                
+                case '5min_before':
+                    if ($language === 'en') {
+                        return "Your class will start soon";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours va commencer bientôt";
+                    } else {
+                        return "حصتك ستبدأ قريبا";
+                    }
+                
+                case 'start_time':
+                    if ($language === 'en') {
+                        return "Your class has started. The teacher is waiting";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours a commencé. Le professeur attend";
+                    } else {
+                        return "حصتك بدأت المعلم في الانتظار";
+                    }
+                
+                case '5min_after':
+                    if ($language === 'en') {
+                        return "Your class started minutes ago. The teacher is waiting";
+                    } elseif ($language === 'fr') {
+                        return "Votre cours a commencé il y a quelques minutes. Le professeur attend";
+                    } else {
+                        return "حصتك بدأت منذ دقائق المعلم في الانتظار";
+                    }
+                
+                default:
+                    return "حصتك ستبدأ قريبا";
+            }
+        } else {
+            // Teacher messages - always in Arabic
+            switch ($reminderType) {
+                case '2hours_before':
+                    return "الحصة للطالب {$studentName} ستبدأ بعد ساعتين";
+                
+                case '5min_before':
+                    return "الحصة للطالب {$studentName} ستبدأ قريبا";
+                
+                case 'start_time':
+                    return "الحصة الخاصه بالطالب {$studentName} بدأت";
+                
+                case '5min_after':
+                    return "الحصة الخاصه بالطالب {$studentName} بدأت منذ دقايق";
+                
+                default:
+                    return "الحصة للطالب {$studentName} ستبدأ قريبا";
+            }
         }
     }
 }

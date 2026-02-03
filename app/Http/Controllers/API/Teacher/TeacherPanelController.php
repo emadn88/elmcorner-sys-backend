@@ -37,7 +37,10 @@ class TeacherPanelController extends Controller
     {
         $teacher = $this->getCurrentTeacher();
 
-        $today = Carbon::today()->format('Y-m-d');
+        // Use teacher's timezone to determine "today"
+        $teacherTimezone = $teacher->timezone ?? config('app.timezone', 'UTC');
+        $today = Carbon::now($teacherTimezone)->format('Y-m-d');
+        
         $todayClasses = $teacher->classes()
             ->where('class_date', $today)
             ->with(['student', 'course'])
@@ -46,7 +49,7 @@ class TeacherPanelController extends Controller
 
         $upcomingClasses = $teacher->classes()
             ->where('class_date', '>=', $today)
-            ->where('class_date', '<=', Carbon::now()->addDays(7)->format('Y-m-d'))
+            ->where('class_date', '<=', Carbon::now($teacherTimezone)->addDays(7)->format('Y-m-d'))
             ->with(['student', 'course'])
             ->orderBy('class_date', 'asc')
             ->orderBy('start_time', 'asc')
@@ -59,30 +62,63 @@ class TeacherPanelController extends Controller
             ->count();
 
         $thisMonthClasses = $teacher->classes()
-            ->whereMonth('class_date', Carbon::now()->month)
-            ->whereYear('class_date', Carbon::now()->year)
+            ->whereMonth('class_date', Carbon::now($teacherTimezone)->month)
+            ->whereYear('class_date', Carbon::now($teacherTimezone)->year)
             ->get();
 
         // Calculate this month's hours from all classes (not just attended)
         $thisMonthHours = $thisMonthClasses->sum('duration') / 60; // Convert minutes to hours
         $thisMonthHours = round($thisMonthHours, 2);
 
+        // Count only pending classes for TODAY
         $pendingClasses = $teacher->classes()
             ->where('status', 'pending')
-            ->where('class_date', '>=', $today)
+            ->where('class_date', $today)
             ->count();
 
         // Calculate attendance rate
+        // Exclude classes cancelled by students from the calculation
         $allClasses = $teacher->classes()->get();
         $attendedCount = $allClasses->where('status', 'attended')->count();
-        $attendanceRate = $allClasses->count() > 0 
-            ? round(($attendedCount / $allClasses->count()) * 100, 2) 
+        // Total classes excluding those cancelled by students (student cancellations shouldn't count against attendance)
+        $totalClassesForAttendance = $allClasses->reject(function ($class) {
+            return $class->status === 'cancelled_by_student';
+        })->count();
+        $attendanceRate = $totalClassesForAttendance > 0 
+            ? round(($attendedCount / $totalClassesForAttendance) * 100, 2) 
             : 0;
 
-        // Calculate total hours from attended classes
+        // Calculate punctuality rate (based on when teacher joined meet vs class start time)
+        $punctualityData = $this->calculatePunctualityRate($allClasses);
+
+        // Calculate report submission rate (based on when report was sent vs class end time)
+        $reportSubmissionData = $this->calculateReportSubmissionRate($allClasses);
+
+        // Calculate total hours from attended classes AND approved cancellations (both count for salary)
+        // Rejected cancellations and classes cancelled by teacher/admin do NOT count for salary
         $attendedClasses = $allClasses->where('status', 'attended');
-        $totalHours = $attendedClasses->sum('duration') / 60; // Convert minutes to hours
+        $approvedCancellations = $allClasses->where('status', 'cancelled_by_student')
+            ->where('cancellation_request_status', 'approved');
+        
+        // Combine attended and approved cancellations for salary calculation
+        $classesForSalary = $attendedClasses->merge($approvedCancellations);
+        $totalHours = $classesForSalary->sum('duration') / 60; // Convert minutes to hours
         $totalHours = round($totalHours, 2);
+        
+        // Get classes for display (attended + approved cancellations)
+        // Rejected cancellations and classes cancelled by teacher/admin are excluded
+        $attendedClassesForDisplay = $teacher->classes()
+            ->where(function($query) {
+                $query->where('status', 'attended')
+                    ->orWhere(function($q) {
+                        $q->where('status', 'cancelled_by_student')
+                          ->where('cancellation_request_status', 'approved');
+                    });
+            })
+            ->with(['student', 'course'])
+            ->orderBy('class_date', 'desc')
+            ->orderBy('start_time', 'desc')
+            ->get();
 
         // Calculate total salary (total hours * hourly rate)
         $totalSalary = round($totalHours * $teacher->hourly_rate, 2);
@@ -103,6 +139,16 @@ class TeacherPanelController extends Controller
                     'assigned_students_count' => $assignedStudents,
                     'this_month_hours' => $thisMonthHours,
                     'attendance_rate' => $attendanceRate,
+                    'punctuality_rate' => $punctualityData['rate'],
+                    'punctuality_score' => $punctualityData['score'],
+                    'on_time_classes' => $punctualityData['on_time'],
+                    'late_classes' => $punctualityData['late'],
+                    'very_late_classes' => $punctualityData['very_late'],
+                    'report_submission_rate' => $reportSubmissionData['rate'],
+                    'report_submission_score' => $reportSubmissionData['score'],
+                    'immediate_reports' => $reportSubmissionData['immediate'],
+                    'late_reports' => $reportSubmissionData['late'],
+                    'very_late_reports' => $reportSubmissionData['very_late'],
                     'total_hours' => $totalHours,
                     'total_salary' => $totalSalary,
                     'total_classes' => $totalClasses,
@@ -111,29 +157,34 @@ class TeacherPanelController extends Controller
                 ],
                 'today_classes' => $todayClasses,
                 'upcoming_classes' => $upcomingClasses,
+                'attended_classes' => $attendedClassesForDisplay, // Return attended classes used for calculation
             ],
         ]);
     }
 
     /**
      * Get teacher's classes with filters (default: today's classes)
+     * Filter options: 'past' - shows only past classes
      */
     public function getClasses(Request $request): JsonResponse
     {
         $teacher = $this->getCurrentTeacher();
+        
+        // Use teacher's timezone to determine "today"
+        $teacherTimezone = $teacher->timezone ?? config('app.timezone', 'UTC');
+        $today = Carbon::now($teacherTimezone)->format('Y-m-d');
 
         $query = $teacher->classes()->with(['student', 'course', 'package']);
 
-        // Default to today's classes if no date filter
-        if (!$request->has('date_from') && !$request->has('date_to')) {
-            $query->where('class_date', Carbon::today()->format('Y-m-d'));
+        // Check for filter parameter: 'past' shows only past classes, default shows today's classes
+        $filter = $request->input('filter', 'today');
+        
+        if ($filter === 'past') {
+            // Show only past classes (before today)
+            $query->where('class_date', '<', $today);
         } else {
-            if ($request->has('date_from')) {
-                $query->where('class_date', '>=', $request->input('date_from'));
-            }
-            if ($request->has('date_to')) {
-                $query->where('class_date', '<=', $request->input('date_to'));
-            }
+            // Default: show only today's classes
+            $query->where('class_date', $today);
         }
 
         // Filter by status
@@ -250,14 +301,6 @@ class TeacherPanelController extends Controller
             return response()->json([
                 'status' => 'error',
                 'message' => 'Meet link not configured for this teacher',
-            ], 400);
-        }
-
-        // Validate class time has started
-        if (!$this->classService->canEnterMeet($class)) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Class time has not started yet',
             ], 400);
         }
 
@@ -383,6 +426,256 @@ class TeacherPanelController extends Controller
             'message' => 'Cancellation request submitted. Waiting for admin approval.',
             'data' => $class->fresh(),
         ]);
+    }
+
+    /**
+     * Submit class report
+     */
+    public function submitClassReport(Request $request, int $id): JsonResponse
+    {
+        $teacher = $this->getCurrentTeacher();
+        
+        $request->validate([
+            'status' => 'required|in:attended,cancelled',
+            'student_evaluation' => 'required_if:status,attended|string|max:500',
+            'class_report' => 'required_if:status,attended|string',
+            'notes' => 'nullable|string',
+            'send_whatsapp' => 'required|boolean',
+        ]);
+
+        $class = ClassInstance::where('id', $id)
+            ->where('teacher_id', $teacher->id)
+            ->with(['student', 'course'])
+            ->firstOrFail();
+
+        // Check if meet was entered
+        if (!$class->meet_link_used) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'You must start the class first',
+            ], 400);
+        }
+
+        // Update class details
+        if ($request->input('status') === 'attended') {
+            // Only update status if not already attended (to avoid double package deduction)
+            if ($class->status !== 'attended') {
+                // Use ClassService to update status (handles package deduction and billing)
+                $this->mainClassService->updateClassStatus($class->id, 'attended', Auth::id());
+            }
+            
+            // Refresh class to get updated data
+            $class->refresh();
+            
+            // Update report-specific fields
+            $class->student_evaluation = $request->input('student_evaluation');
+            $class->class_report = $request->input('class_report');
+            $class->notes = $request->input('notes');
+            // Track when report is submitted (only if WhatsApp is sent, as per requirement)
+            if ($request->input('send_whatsapp')) {
+                $class->report_submitted_at = now();
+            }
+            $class->save();
+
+            // Check if package was finished and send bill notification after report is saved
+            if ($class->package_id) {
+                $package = \App\Models\Package::with('student')->find($class->package_id);
+                if ($package && $package->status === 'finished') {
+                    try {
+                        $packageService = app(\App\Services\PackageService::class);
+                        $packageService->sendAutomaticBillNotification($package->fresh());
+                    } catch (\Exception $e) {
+                        // Log error but don't fail the request
+                        \Log::error('Failed to send automatic bill notification after report', [
+                            'package_id' => $package->id,
+                            'class_id' => $class->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+
+            // Send WhatsApp if requested
+            if ($request->input('send_whatsapp')) {
+                try {
+                    $this->sendReportViaWhatsApp($class);
+                } catch (\Exception $e) {
+                    // Log error but don't fail the request
+                    \Log::error('Failed to send report via WhatsApp', [
+                        'class_id' => $class->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Class report submitted successfully',
+            'data' => $class->fresh(),
+        ]);
+    }
+
+    /**
+     * Request class cancellation (creates admin notification)
+     */
+    public function requestClassCancellation(Request $request, int $id): JsonResponse
+    {
+        $teacher = $this->getCurrentTeacher();
+        
+        $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
+
+        $class = ClassInstance::where('id', $id)
+            ->where('teacher_id', $teacher->id)
+            ->firstOrFail();
+
+        // Check if class can be cancelled
+        if (in_array($class->status, ['cancelled_by_student', 'cancelled_by_teacher', 'attended'])) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This class cannot be cancelled',
+            ], 400);
+        }
+
+        // Create cancellation request (creates notification for admin)
+        $this->classService->requestCancellation($class, $request->input('reason'), Auth::id());
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Cancellation request submitted. Waiting for admin approval.',
+            'data' => $class->fresh(),
+        ]);
+    }
+
+    /**
+     * Send class report via WhatsApp
+     */
+    protected function sendReportViaWhatsApp(ClassInstance $class): void
+    {
+        $student = $class->student;
+        if (!$student || !$student->whatsapp) {
+            throw new \Exception('Student WhatsApp number not found');
+        }
+
+        // Get student language
+        $language = strtolower($student->language ?? 'ar');
+        if (!in_array($language, ['ar', 'en', 'fr'])) {
+            $language = 'ar';
+        }
+
+        // Generate report message based on language
+        $message = $this->generateReportMessage($class, $language);
+
+        // Send via WhatsApp service
+        $whatsAppService = app(\App\Services\WhatsAppService::class);
+        $whatsAppService->sendMessage($student->whatsapp, $message);
+    }
+
+    /**
+     * Generate report message in specified language
+     */
+    protected function generateReportMessage(ClassInstance $class, string $language): string
+    {
+        $academyName = config('app.name', 'Elm Corner Academy');
+        $supportPhone = config('whatsapp.support_phone', '+201099471391');
+        $studentName = $class->student->full_name ?? 'Student';
+        $courseName = $class->course->name ?? 'Course';
+        $evaluation = $class->student_evaluation ?? '';
+        $report = $class->class_report ?? '';
+        
+        // Format class date with day name and date
+        $dayName = '';
+        $formattedDate = '';
+        if ($class->class_date) {
+            $date = Carbon::parse($class->class_date);
+            if ($language === 'en') {
+                $dayName = $date->format('l'); // Full day name (Monday, Tuesday, etc.)
+                $formattedDate = $date->format('F d, Y'); // Month day, year (January 15, 2024)
+            } elseif ($language === 'fr') {
+                $date->locale('fr');
+                $dayName = $date->translatedFormat('l'); // Jour de la semaine
+                $formattedDate = $date->translatedFormat('d F Y'); // 15 janvier 2024
+            } else {
+                // Arabic
+                $date->locale('ar');
+                $dayName = $date->translatedFormat('l'); // يوم الأسبوع
+                $formattedDate = $date->translatedFormat('d F Y'); // ١٥ يناير ٢٠٢٤
+            }
+        }
+        
+        // Map evaluation to readable text
+        $evaluationText = '';
+        if ($evaluation) {
+            $evaluationMap = [
+                'good' => 'Good',
+                'very_good' => 'Very Good',
+                'excellent' => 'Excellent',
+            ];
+            $evaluationText = $evaluationMap[$evaluation] ?? ucfirst($evaluation);
+        }
+
+        if ($language === 'en') {
+            return <<<MSG
+🎓 *ELM CORNER ACADEMY*
+
+📋 *Class Report*
+
+👤 *Student:* {$studentName}
+📚 *Course:* {$courseName}
+📅 *Date:* {$dayName}, {$formattedDate}
+⭐ *Evaluation:* {$evaluationText}
+
+📝 *Report:*
+{$report}
+
+📞 *Support:* {$supportPhone}
+MSG;
+        } elseif ($language === 'fr') {
+            return <<<MSG
+🎓 *ELM CORNER ACADEMY*
+
+📋 *Rapport de Classe*
+
+👤 *Étudiant:* {$studentName}
+📚 *Cours:* {$courseName}
+📅 *Date:* {$dayName}, {$formattedDate}
+⭐ *Évaluation:* {$evaluationText}
+
+📝 *Rapport:*
+{$report}
+
+📞 *Support:* {$supportPhone}
+MSG;
+        } else {
+            // Arabic (default)
+            $evaluationTextAr = '';
+            if ($evaluation) {
+                $evaluationMapAr = [
+                    'good' => 'جيد',
+                    'very_good' => 'جيد جداً',
+                    'excellent' => 'ممتاز',
+                ];
+                $evaluationTextAr = $evaluationMapAr[$evaluation] ?? $evaluation;
+            }
+            
+            return <<<MSG
+🎓 *أكاديمية إلم كورنر*
+
+📋 *تقرير الحصة*
+
+👤 *الطالب:* {$studentName}
+📚 *الدورة:* {$courseName}
+📅 *التاريخ:* {$dayName}، {$formattedDate}
+⭐ *التقييم:* {$evaluationTextAr}
+
+📝 *التقرير:*
+{$report}
+
+📞 *الدعم:* {$supportPhone}
+MSG;
+        }
     }
 
     /**
@@ -793,11 +1086,11 @@ class TeacherPanelController extends Controller
             ->where('teacher_id', $teacher->id)
             ->firstOrFail();
 
-        // Validate trial time has started
+        // Validate trial can be entered (allows pending trials at any time)
         if (!$this->classService->canEnterTrial($trial)) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Trial time has not started yet',
+                'message' => 'Trial cannot be entered at this time',
             ], 400);
         }
 
@@ -815,6 +1108,240 @@ class TeacherPanelController extends Controller
             'status' => 'success',
             'message' => 'Trial marked as entered successfully',
             'data' => $trial->fresh()->load(['student', 'course']),
+        ]);
+    }
+
+    /**
+     * Calculate punctuality rate based on when teacher joined meet vs class start time
+     */
+    private function calculatePunctualityRate($classes): array
+    {
+        $onTime = 0;
+        $late = 0;
+        $veryLate = 0;
+        $totalJoined = 0;
+
+        foreach ($classes as $class) {
+            // Only count classes where teacher actually joined (has meet_link_accessed_at)
+            if (!$class->meet_link_accessed_at) {
+                continue;
+            }
+
+            $totalJoined++;
+
+            // Get class start datetime
+            $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+            
+            // Get when teacher joined
+            $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+            
+            // Calculate minutes difference (positive = joined after start, negative = joined before start)
+            // diffInMinutes returns absolute difference, so we need to check which is later
+            if ($joinedTime->lte($classStartTime)) {
+                // Joined on time or before start time
+                $onTime++;
+            } else {
+                // Joined after start time - calculate how many minutes late
+                $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                
+                if ($minutesLate <= 10) {
+                    // Joined late but within 10 minutes
+                    $late++;
+                } else {
+                    // Joined very late (more than 10 minutes)
+                    $veryLate++;
+                }
+            }
+        }
+
+        // Calculate punctuality rate (percentage of on-time joins)
+        $punctualityRate = $totalJoined > 0 
+            ? round(($onTime / $totalJoined) * 100, 2) 
+            : 0;
+
+        // Calculate punctuality score (weighted: on-time = 100, late = 50, very late = 0)
+        // Score = (onTime * 100 + late * 50 + veryLate * 0) / totalJoined
+        $punctualityScore = $totalJoined > 0
+            ? round((($onTime * 100) + ($late * 50) + ($veryLate * 0)) / $totalJoined, 2)
+            : 0;
+
+        return [
+            'rate' => $punctualityRate,
+            'score' => $punctualityScore,
+            'on_time' => $onTime,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_joined' => $totalJoined,
+        ];
+    }
+
+    /**
+     * Calculate report submission rate based on when report was sent vs class end time
+     */
+    private function calculateReportSubmissionRate($classes): array
+    {
+        $immediate = 0; // Sent within 5 minutes of class end
+        $late = 0; // Sent 5-10 minutes after class end
+        $veryLate = 0; // Sent more than 10 minutes after class end
+        $totalReports = 0;
+
+        foreach ($classes as $class) {
+            // Only count classes where report was actually submitted
+            if (!$class->report_submitted_at) {
+                continue;
+            }
+
+            $totalReports++;
+
+            // Get class end datetime
+            $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+            
+            // Get when report was submitted
+            $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+            
+            // Calculate minutes difference (positive = submitted after class end)
+            if ($reportSubmittedTime->lte($classEndTime)) {
+                // Submitted before or at class end time (immediate)
+                $immediate++;
+            } else {
+                $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                
+                if ($minutesAfterEnd <= 5) {
+                    // Submitted within 5 minutes after class end
+                    $immediate++;
+                } elseif ($minutesAfterEnd <= 10) {
+                    // Submitted 5-10 minutes after class end
+                    $late++;
+                } else {
+                    // Submitted more than 10 minutes after class end
+                    $veryLate++;
+                }
+            }
+        }
+
+        // Calculate report submission rate (percentage of immediate submissions)
+        $reportSubmissionRate = $totalReports > 0 
+            ? round(($immediate / $totalReports) * 100, 2) 
+            : 0;
+
+        // Calculate report submission score (weighted: immediate = 100, late = 70, very late = 40)
+        // Score decreases by 5 points for every 5 minutes after class end
+        $reportSubmissionScore = $totalReports > 0
+            ? round((($immediate * 100) + ($late * 70) + ($veryLate * 40)) / $totalReports, 2)
+            : 0;
+
+        return [
+            'rate' => $reportSubmissionRate,
+            'score' => $reportSubmissionScore,
+            'immediate' => $immediate,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_reports' => $totalReports,
+        ];
+    }
+
+    /**
+     * Get monthly rate details (punctuality or report submission)
+     */
+    public function getMonthlyRateDetails(Request $request): JsonResponse
+    {
+        $teacher = $this->getCurrentTeacher();
+        $rateType = $request->input('type', 'punctuality'); // 'punctuality' or 'report_submission'
+        $month = $request->input('month', Carbon::now()->month);
+        $year = $request->input('year', Carbon::now()->year);
+
+        // Get classes for the specified month
+        $monthClasses = $teacher->classes()
+            ->whereYear('class_date', $year)
+            ->whereMonth('class_date', $month)
+            ->with(['student', 'course'])
+            ->get();
+
+        if ($rateType === 'punctuality') {
+            $data = $this->calculatePunctualityRate($monthClasses);
+            
+            // Get detailed class information
+            $classes = [];
+            foreach ($monthClasses as $class) {
+                if (!$class->meet_link_accessed_at) {
+                    continue;
+                }
+                
+                $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+                $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+                
+                $status = 'on_time';
+                $minutesLate = 0;
+                
+                if ($joinedTime->gt($classStartTime)) {
+                    $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                    if ($minutesLate <= 10) {
+                        $status = 'late';
+                    } else {
+                        $status = 'very_late';
+                    }
+                }
+                
+                $classes[] = [
+                    'id' => $class->id,
+                    'student_name' => $class->student->full_name ?? 'N/A',
+                    'course_name' => $class->course->name ?? 'N/A',
+                    'class_date' => $class->class_date->format('Y-m-d'),
+                    'start_time' => $class->start_time->format('H:i:s'),
+                    'joined_time' => $joinedTime->format('Y-m-d H:i:s'),
+                    'status' => $status,
+                    'minutes_late' => $minutesLate,
+                ];
+            }
+            
+            $data['classes'] = $classes;
+        } else {
+            $data = $this->calculateReportSubmissionRate($monthClasses);
+            
+            // Get detailed class information
+            $classes = [];
+            foreach ($monthClasses as $class) {
+                if (!$class->report_submitted_at) {
+                    continue;
+                }
+                
+                $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+                $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+                
+                $status = 'immediate';
+                $minutesAfterEnd = 0;
+                
+                if ($reportSubmittedTime->gt($classEndTime)) {
+                    $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                    if ($minutesAfterEnd <= 5) {
+                        $status = 'immediate';
+                    } elseif ($minutesAfterEnd <= 10) {
+                        $status = 'late';
+                    } else {
+                        $status = 'very_late';
+                    }
+                }
+                
+                $classes[] = [
+                    'id' => $class->id,
+                    'student_name' => $class->student->full_name ?? 'N/A',
+                    'course_name' => $class->course->name ?? 'N/A',
+                    'class_date' => $class->class_date->format('Y-m-d'),
+                    'end_time' => $class->end_time->format('H:i:s'),
+                    'submitted_time' => $reportSubmittedTime->format('Y-m-d H:i:s'),
+                    'status' => $status,
+                    'minutes_after_end' => $minutesAfterEnd,
+                ];
+            }
+            
+            $data['classes'] = $classes;
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $data,
+            'month' => $month,
+            'year' => $year,
         ]);
     }
 

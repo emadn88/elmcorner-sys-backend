@@ -53,15 +53,35 @@ class Package extends Model
     }
 
     /**
-     * Check if package is finished.
+     * Check if package is finished (pending payment).
+     * Note: 'paid' status means the package was paid and archived.
      */
     public function getIsFinishedAttribute(): bool
     {
-        // Package is finished if remaining hours or remaining classes are <= 0
+        // Package is finished if status is 'finished' or remaining hours/classes <= 0
+        if ($this->status === 'finished' || $this->status === 'paid') {
+            return true;
+        }
         if ($this->remaining_hours !== null) {
             return $this->remaining_hours <= 0;
         }
         return $this->remaining_classes <= 0;
+    }
+
+    /**
+     * Check if package is paid (archived).
+     */
+    public function getIsPaidAttribute(): bool
+    {
+        return $this->status === 'paid';
+    }
+
+    /**
+     * Check if package is pending payment (finished but not yet paid).
+     */
+    public function getIsPendingPaymentAttribute(): bool
+    {
+        return $this->status === 'finished';
     }
 
     /**

@@ -7,6 +7,7 @@ use App\Models\ClassInstance;
 use App\Models\ActivityLog;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 
 class TeacherService
 {
@@ -38,7 +39,170 @@ class TeacherService
             });
         }
 
-        return $query->orderBy('id', 'desc')->paginate($perPage);
+        $teachers = $query->orderBy('id', 'desc')->paginate($perPage);
+        
+        // Add cumulative rates to each teacher
+        foreach ($teachers->items() as $teacher) {
+            $allClasses = ClassInstance::where('teacher_id', $teacher->id)
+                ->with(['student', 'course'])
+                ->get();
+            
+            // Calculate punctuality rate
+            $punctualityData = $this->calculatePunctualityRate($allClasses);
+            
+            // Calculate report submission rate
+            $reportSubmissionData = $this->calculateReportSubmissionRate($allClasses);
+            
+            // Calculate attendance rate
+            $attendanceData = $this->calculateAttendanceRate($allClasses);
+            
+            // Add rates to teacher object
+            $teacher->punctuality_rate = $punctualityData['rate'];
+            $teacher->punctuality_score = $punctualityData['score'];
+            $teacher->report_submission_rate = $reportSubmissionData['rate'];
+            $teacher->report_submission_score = $reportSubmissionData['score'];
+            $teacher->attendance_rate = $attendanceData['rate'];
+            $teacher->attendance_score = $attendanceData['score'];
+        }
+        
+        return $teachers;
+    }
+
+    /**
+     * Calculate punctuality rate
+     */
+    private function calculatePunctualityRate($classes): array
+    {
+        $onTime = 0;
+        $late = 0;
+        $veryLate = 0;
+        $totalJoined = 0;
+
+        foreach ($classes as $class) {
+            if (!$class->meet_link_accessed_at) {
+                continue;
+            }
+
+            $totalJoined++;
+            $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
+            $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+            
+            if ($joinedTime->lte($classStartTime)) {
+                $onTime++;
+            } else {
+                $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                if ($minutesLate <= 10) {
+                    $late++;
+                } else {
+                    $veryLate++;
+                }
+            }
+        }
+
+        $punctualityRate = $totalJoined > 0 
+            ? round(($onTime / $totalJoined) * 100, 2) 
+            : 0;
+
+        $punctualityScore = $totalJoined > 0
+            ? round((($onTime * 100) + ($late * 50) + ($veryLate * 0)) / $totalJoined, 2)
+            : 0;
+
+        return [
+            'rate' => $punctualityRate,
+            'score' => $punctualityScore,
+            'on_time' => $onTime,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_joined' => $totalJoined,
+        ];
+    }
+
+    /**
+     * Calculate report submission rate
+     */
+    private function calculateReportSubmissionRate($classes): array
+    {
+        $immediate = 0;
+        $late = 0;
+        $veryLate = 0;
+        $totalReports = 0;
+
+        foreach ($classes as $class) {
+            if (!$class->report_submitted_at) {
+                continue;
+            }
+
+            $totalReports++;
+            $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
+            $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+            
+            if ($reportSubmittedTime->lte($classEndTime)) {
+                $immediate++;
+            } else {
+                $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                if ($minutesAfterEnd <= 5) {
+                    $immediate++;
+                } elseif ($minutesAfterEnd <= 10) {
+                    $late++;
+                } else {
+                    $veryLate++;
+                }
+            }
+        }
+
+        $reportSubmissionRate = $totalReports > 0 
+            ? round(($immediate / $totalReports) * 100, 2) 
+            : 0;
+
+        $reportSubmissionScore = $totalReports > 0
+            ? round((($immediate * 100) + ($late * 70) + ($veryLate * 40)) / $totalReports, 2)
+            : 0;
+
+        return [
+            'rate' => $reportSubmissionRate,
+            'score' => $reportSubmissionScore,
+            'immediate' => $immediate,
+            'late' => $late,
+            'very_late' => $veryLate,
+            'total_reports' => $totalReports,
+        ];
+    }
+
+    /**
+     * Calculate attendance rate
+     */
+    private function calculateAttendanceRate($classes): array
+    {
+        $attended = 0;
+        $cancelledByStudent = 0;
+        $total = $classes->count();
+
+        foreach ($classes as $class) {
+            if ($class->status === 'attended') {
+                $attended++;
+            } elseif ($class->status === 'cancelled_by_student') {
+                $cancelledByStudent++;
+            }
+        }
+
+        // Attendance rate = (attended + cancelled_by_student) / total * 100
+        // This means classes that were either attended or cancelled by student (not by teacher) count as "good attendance"
+        $attendanceRate = $total > 0 
+            ? round((($attended + $cancelledByStudent) / $total) * 100, 2) 
+            : 0;
+
+        // Score: attended = 100, cancelled_by_student = 80, others = 0
+        $attendanceScore = $total > 0
+            ? round((($attended * 100) + ($cancelledByStudent * 80)) / $total, 2)
+            : 0;
+
+        return [
+            'rate' => $attendanceRate,
+            'score' => $attendanceScore,
+            'attended' => $attended,
+            'cancelled_by_student' => $cancelledByStudent,
+            'total' => $total,
+        ];
     }
 
     /**
@@ -152,11 +316,18 @@ class TeacherService
             ->get();
         
         $attendedClasses = $monthClasses->where('status', 'attended');
+        $approvedCancellations = $monthClasses->where('status', 'cancelled_by_student')
+            ->where('cancellation_request_status', 'approved');
+        
+        // Combine attended and approved cancellations for salary calculation
+        // Rejected cancellations and classes cancelled by teacher/admin do NOT count for salary
+        $classesForSalary = $attendedClasses->merge($approvedCancellations);
+        
         $totalClasses = $monthClasses->count();
         $attendedCount = $attendedClasses->count();
         
-        // Calculate total hours
-        $totalMinutes = $attendedClasses->sum('duration') ?? 0;
+        // Calculate total hours from attended + approved cancellations
+        $totalMinutes = $classesForSalary->sum('duration') ?? 0;
         $totalHours = round($totalMinutes / 60, 2);
         
         // Calculate salary

@@ -17,12 +17,14 @@ class Timetable extends Model
         'time_slots',
         'student_timezone',
         'teacher_timezone',
+        'time_difference_minutes',
         'status',
     ];
 
     protected $casts = [
         'days_of_week' => 'array',
         'time_slots' => 'array',
+        'time_difference_minutes' => 'integer',
         'status' => 'string',
     ];
 
