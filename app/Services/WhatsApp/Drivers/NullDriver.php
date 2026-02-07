@@ -36,4 +36,19 @@ class NullDriver implements WhatsAppInterface
 
         return true;
     }
+
+    /**
+     * Send an image (no-op for testing)
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool
+    {
+        // Log for testing purposes
+        \Log::info('WhatsApp NullDriver: Would send image', [
+            'phone' => $phone,
+            'image_path' => $imagePath,
+            'caption' => $caption,
+        ]);
+
+        return true;
+    }
 }

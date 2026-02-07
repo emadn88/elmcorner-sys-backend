@@ -122,4 +122,63 @@ class MetaDriver implements WhatsAppInterface
             return false;
         }
     }
+
+    /**
+     * Send an image via Meta WhatsApp API
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool
+    {
+        try {
+            if (!$this->token || !$this->phoneId) {
+                Log::error('Meta WhatsApp credentials not configured');
+                return false;
+            }
+
+            // Check if imagePath is a URL or file path
+            $imageUrl = $imagePath;
+            if (!filter_var($imagePath, FILTER_VALIDATE_URL)) {
+                // It's a file path, need to upload to a publicly accessible URL
+                // For now, assume it's already a public URL or use storage URL
+                if (file_exists($imagePath)) {
+                    // If it's a local file, we need to make it accessible
+                    // For Meta API, we need a publicly accessible URL
+                    $imageUrl = asset(str_replace(public_path(), '', $imagePath));
+                }
+            }
+
+            $url = "https://graph.facebook.com/v18.0/{$this->phoneId}/messages";
+
+            $payload = [
+                'messaging_product' => 'whatsapp',
+                'to' => $phone,
+                'type' => 'image',
+                'image' => [
+                    'link' => $imageUrl,
+                ],
+            ];
+
+            if ($caption) {
+                $payload['image']['caption'] = $caption;
+            }
+
+            $response = Http::withToken($this->token)->post($url, $payload);
+
+            if ($response->successful()) {
+                return true;
+            }
+
+            Log::error('Meta WhatsApp image send failed', [
+                'phone' => $phone,
+                'response' => $response->json(),
+            ]);
+
+            return false;
+        } catch (\Exception $e) {
+            Log::error('Meta WhatsApp image exception', [
+                'phone' => $phone,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
 }

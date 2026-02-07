@@ -97,6 +97,39 @@ class TrialService
         // Load relationships for notification
         $trial->load(['student', 'teacher.user', 'course']);
 
+        // Generate and send trial image via WhatsApp
+        try {
+            $trialImageService = app(\App\Services\TrialImageService::class);
+            $whatsAppService = app(\App\Services\WhatsAppService::class);
+            
+            // Generate trial image (save to storage and get URL)
+            $imageUrl = $trialImageService->generateTrialImage($trial, false);
+            
+            // Send image via WhatsApp if student has WhatsApp number
+            if ($imageUrl && $trial->student && $trial->student->whatsapp) {
+                // Use the full URL for WhatsApp (needs to be publicly accessible)
+                $fullImageUrl = $imageUrl;
+                if (!filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+                    // If it's a relative URL, make it absolute
+                    $fullImageUrl = config('app.url') . '/' . ltrim($imageUrl, '/');
+                }
+                
+                $whatsAppService->sendImage(
+                    $trial->student->whatsapp,
+                    $fullImageUrl,
+                    null, // No caption needed, image contains all info
+                    'trial_image'
+                );
+            }
+        } catch (\Exception $e) {
+            // Log error but don't fail trial creation
+            \Illuminate\Support\Facades\Log::error('Failed to generate and send trial image', [
+                'trial_id' => $trial->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+        }
+
         // Send WhatsApp notification to student and teacher
         try {
             $reminderService = app(\App\Services\ReminderService::class);

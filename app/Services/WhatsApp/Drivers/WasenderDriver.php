@@ -79,4 +79,61 @@ class WasenderDriver implements WhatsAppInterface
 
         return $this->sendMessage($phone, $message);
     }
+
+    /**
+     * Send an image via Wasender API
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool
+    {
+        try {
+            if (!$this->apiKey) {
+                Log::error('Wasender API key not configured');
+                return false;
+            }
+
+            // Remove + from phone number for Wasender
+            $phoneNumber = ltrim($phone, '+');
+
+            // Check if imagePath is a URL or file path
+            $imageUrl = $imagePath;
+            if (!filter_var($imagePath, FILTER_VALIDATE_URL)) {
+                // It's a file path, need to make it publicly accessible
+                if (file_exists($imagePath)) {
+                    $imageUrl = asset(str_replace(public_path(), '', $imagePath));
+                }
+            }
+
+            $payload = [
+                'to' => $phoneNumber,
+                'image' => $imageUrl,
+            ];
+
+            if ($caption) {
+                $payload['caption'] = $caption;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Content-Type' => 'application/json',
+            ])->post("{$this->baseUrl}/send-image", $payload);
+
+            if ($response->successful()) {
+                return true;
+            }
+
+            Log::error('Wasender WhatsApp image send failed', [
+                'phone' => $phone,
+                'response' => $response->json(),
+                'status' => $response->status(),
+            ]);
+
+            return false;
+        } catch (\Exception $e) {
+            Log::error('Wasender WhatsApp image exception', [
+                'phone' => $phone,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
 }

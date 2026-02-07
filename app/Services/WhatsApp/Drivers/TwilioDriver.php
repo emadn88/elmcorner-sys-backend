@@ -71,4 +71,48 @@ class TwilioDriver implements WhatsAppInterface
 
         return $this->sendMessage($phone, $message);
     }
+
+    /**
+     * Send an image via Twilio
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool
+    {
+        try {
+            if (!$this->client) {
+                Log::error('Twilio client not initialized');
+                return false;
+            }
+
+            // Check if imagePath is a URL or file path
+            $imageUrl = $imagePath;
+            if (!filter_var($imagePath, FILTER_VALIDATE_URL)) {
+                // It's a file path, need to make it publicly accessible
+                if (file_exists($imagePath)) {
+                    $imageUrl = asset(str_replace(public_path(), '', $imagePath));
+                }
+            }
+
+            $messageOptions = [
+                'from' => "whatsapp:{$this->from}",
+                'mediaUrl' => [$imageUrl],
+            ];
+
+            if ($caption) {
+                $messageOptions['body'] = $caption;
+            }
+
+            $this->client->messages->create(
+                "whatsapp:{$phone}",
+                $messageOptions
+            );
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Twilio WhatsApp image send failed', [
+                'phone' => $phone,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
 }

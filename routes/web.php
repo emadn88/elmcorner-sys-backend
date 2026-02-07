@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\TrialImageController;
 
 Route::get('/', function () {
     return view('welcome');
@@ -12,3 +13,6 @@ Route::get('/', function () {
 Route::get('/payment/{token}', function ($token) {
     return view('payment', ['token' => $token]);
 });
+
+// Public test route for trial image generation
+Route::get('/test/trial-image', [TrialImageController::class, 'generateTestImage']);

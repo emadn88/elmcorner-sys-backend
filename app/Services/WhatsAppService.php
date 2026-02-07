@@ -75,6 +75,19 @@ class WhatsAppService
     }
 
     /**
+     * Send an image
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null, ?string $messageType = 'trial_image'): bool
+    {
+        $success = $this->driver->sendImage($phone, $imagePath, $caption);
+
+        // Log to database
+        $this->logMessage($phone, $messageType, $success ? 'sent' : 'failed', $success ? null : 'Failed to send image');
+
+        return $success;
+    }
+
+    /**
      * Log message to whatsapp_logs table
      */
     protected function logMessage(string $phone, string $messageType, string $status, ?string $error = null, ?int $packageId = null): void

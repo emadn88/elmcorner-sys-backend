@@ -31,6 +31,42 @@ class TeacherPanelController extends Controller
     }
 
     /**
+     * Map common short timezone names to valid PHP timezone identifiers
+     */
+    private function resolveTimezone(?string $timezone): string
+    {
+        if (empty($timezone)) {
+            return config('app.timezone', 'UTC');
+        }
+
+        // Map of common short names to valid PHP timezone identifiers
+        $timezoneMap = [
+            'Cairo' => 'Africa/Cairo',
+            'cairo' => 'Africa/Cairo',
+            'Riyadh' => 'Asia/Riyadh',
+            'riyadh' => 'Asia/Riyadh',
+            'Dubai' => 'Asia/Dubai',
+            'dubai' => 'Asia/Dubai',
+            'Istanbul' => 'Europe/Istanbul',
+            'istanbul' => 'Europe/Istanbul',
+            'London' => 'Europe/London',
+            'london' => 'Europe/London',
+        ];
+
+        if (isset($timezoneMap[$timezone])) {
+            return $timezoneMap[$timezone];
+        }
+
+        // Validate the timezone
+        try {
+            new \DateTimeZone($timezone);
+            return $timezone;
+        } catch (\Exception $e) {
+            return config('app.timezone', 'UTC');
+        }
+    }
+
+    /**
      * Get teacher's dashboard data
      */
     public function dashboard(): JsonResponse
@@ -38,7 +74,7 @@ class TeacherPanelController extends Controller
         $teacher = $this->getCurrentTeacher();
 
         // Use teacher's timezone to determine "today"
-        $teacherTimezone = $teacher->timezone ?? config('app.timezone', 'UTC');
+        $teacherTimezone = $this->resolveTimezone($teacher->timezone);
         $today = Carbon::now($teacherTimezone)->format('Y-m-d');
         
         $todayClasses = $teacher->classes()
@@ -121,7 +157,7 @@ class TeacherPanelController extends Controller
             ->get();
 
         // Calculate total salary (total hours * hourly rate)
-        $totalSalary = round($totalHours * $teacher->hourly_rate, 2);
+        $totalSalary = round($totalHours * ($teacher->hourly_rate ?? 0), 2);
 
         // Get total classes count
         $totalClasses = $allClasses->count();
@@ -171,7 +207,7 @@ class TeacherPanelController extends Controller
         $teacher = $this->getCurrentTeacher();
         
         // Use teacher's timezone to determine "today"
-        $teacherTimezone = $teacher->timezone ?? config('app.timezone', 'UTC');
+        $teacherTimezone = $this->resolveTimezone($teacher->timezone);
         $today = Carbon::now($teacherTimezone)->format('Y-m-d');
 
         $query = $teacher->classes()->with(['student', 'course', 'package']);
@@ -1127,30 +1163,49 @@ MSG;
                 continue;
             }
 
+            // Skip if required date/time fields are missing
+            if (!$class->class_date || !$class->start_time) {
+                continue;
+            }
+
             $totalJoined++;
 
-            // Get class start datetime
-            $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
-            
-            // Get when teacher joined
-            $joinedTime = Carbon::parse($class->meet_link_accessed_at);
-            
-            // Calculate minutes difference (positive = joined after start, negative = joined before start)
-            // diffInMinutes returns absolute difference, so we need to check which is later
-            if ($joinedTime->lte($classStartTime)) {
-                // Joined on time or before start time
-                $onTime++;
-            } else {
-                // Joined after start time - calculate how many minutes late
-                $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+            try {
+                // Get class start datetime - handle both Carbon instances and strings
+                $classDate = $class->class_date instanceof Carbon 
+                    ? $class->class_date->format('Y-m-d') 
+                    : Carbon::parse($class->class_date)->format('Y-m-d');
                 
-                if ($minutesLate <= 10) {
-                    // Joined late but within 10 minutes
-                    $late++;
+                $startTime = $class->start_time instanceof Carbon 
+                    ? $class->start_time->format('H:i:s') 
+                    : (is_string($class->start_time) ? $class->start_time : Carbon::parse($class->start_time)->format('H:i:s'));
+                
+                $classStartTime = Carbon::parse($classDate . ' ' . $startTime);
+                
+                // Get when teacher joined
+                $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+                
+                // Calculate minutes difference (positive = joined after start, negative = joined before start)
+                // diffInMinutes returns absolute difference, so we need to check which is later
+                if ($joinedTime->lte($classStartTime)) {
+                    // Joined on time or before start time
+                    $onTime++;
                 } else {
-                    // Joined very late (more than 10 minutes)
-                    $veryLate++;
+                    // Joined after start time - calculate how many minutes late
+                    $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                    
+                    if ($minutesLate <= 10) {
+                        // Joined late but within 10 minutes
+                        $late++;
+                    } else {
+                        // Joined very late (more than 10 minutes)
+                        $veryLate++;
+                    }
                 }
+            } catch (\Exception $e) {
+                // Skip this class if there's an error parsing dates
+                $totalJoined--;
+                continue;
             }
         }
 
@@ -1191,31 +1246,50 @@ MSG;
                 continue;
             }
 
+            // Skip if required date/time fields are missing
+            if (!$class->class_date || !$class->end_time) {
+                continue;
+            }
+
             $totalReports++;
 
-            // Get class end datetime
-            $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
-            
-            // Get when report was submitted
-            $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
-            
-            // Calculate minutes difference (positive = submitted after class end)
-            if ($reportSubmittedTime->lte($classEndTime)) {
-                // Submitted before or at class end time (immediate)
-                $immediate++;
-            } else {
-                $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+            try {
+                // Get class end datetime - handle both Carbon instances and strings
+                $classDate = $class->class_date instanceof Carbon 
+                    ? $class->class_date->format('Y-m-d') 
+                    : Carbon::parse($class->class_date)->format('Y-m-d');
                 
-                if ($minutesAfterEnd <= 5) {
-                    // Submitted within 5 minutes after class end
+                $endTime = $class->end_time instanceof Carbon 
+                    ? $class->end_time->format('H:i:s') 
+                    : (is_string($class->end_time) ? $class->end_time : Carbon::parse($class->end_time)->format('H:i:s'));
+                
+                $classEndTime = Carbon::parse($classDate . ' ' . $endTime);
+                
+                // Get when report was submitted
+                $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+                
+                // Calculate minutes difference (positive = submitted after class end)
+                if ($reportSubmittedTime->lte($classEndTime)) {
+                    // Submitted before or at class end time (immediate)
                     $immediate++;
-                } elseif ($minutesAfterEnd <= 10) {
-                    // Submitted 5-10 minutes after class end
-                    $late++;
                 } else {
-                    // Submitted more than 10 minutes after class end
-                    $veryLate++;
+                    $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                    
+                    if ($minutesAfterEnd <= 5) {
+                        // Submitted within 5 minutes after class end
+                        $immediate++;
+                    } elseif ($minutesAfterEnd <= 10) {
+                        // Submitted 5-10 minutes after class end
+                        $late++;
+                    } else {
+                        // Submitted more than 10 minutes after class end
+                        $veryLate++;
+                    }
                 }
+            } catch (\Exception $e) {
+                // Skip this class if there's an error parsing dates
+                $totalReports--;
+                continue;
             }
         }
 
@@ -1267,31 +1341,50 @@ MSG;
                     continue;
                 }
                 
-                $classStartTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->start_time->format('H:i:s'));
-                $joinedTime = Carbon::parse($class->meet_link_accessed_at);
-                
-                $status = 'on_time';
-                $minutesLate = 0;
-                
-                if ($joinedTime->gt($classStartTime)) {
-                    $minutesLate = $joinedTime->diffInMinutes($classStartTime);
-                    if ($minutesLate <= 10) {
-                        $status = 'late';
-                    } else {
-                        $status = 'very_late';
-                    }
+                // Skip if required date/time fields are missing
+                if (!$class->class_date || !$class->start_time) {
+                    continue;
                 }
                 
-                $classes[] = [
-                    'id' => $class->id,
-                    'student_name' => $class->student->full_name ?? 'N/A',
-                    'course_name' => $class->course->name ?? 'N/A',
-                    'class_date' => $class->class_date->format('Y-m-d'),
-                    'start_time' => $class->start_time->format('H:i:s'),
-                    'joined_time' => $joinedTime->format('Y-m-d H:i:s'),
-                    'status' => $status,
-                    'minutes_late' => $minutesLate,
-                ];
+                try {
+                    // Get class start datetime - handle both Carbon instances and strings
+                    $classDate = $class->class_date instanceof Carbon 
+                        ? $class->class_date->format('Y-m-d') 
+                        : Carbon::parse($class->class_date)->format('Y-m-d');
+                    
+                    $startTime = $class->start_time instanceof Carbon 
+                        ? $class->start_time->format('H:i:s') 
+                        : (is_string($class->start_time) ? $class->start_time : Carbon::parse($class->start_time)->format('H:i:s'));
+                    
+                    $classStartTime = Carbon::parse($classDate . ' ' . $startTime);
+                    $joinedTime = Carbon::parse($class->meet_link_accessed_at);
+                
+                    $status = 'on_time';
+                    $minutesLate = 0;
+                    
+                    if ($joinedTime->gt($classStartTime)) {
+                        $minutesLate = $joinedTime->diffInMinutes($classStartTime);
+                        if ($minutesLate <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'id' => $class->id,
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $classDate,
+                        'start_time' => $startTime,
+                        'joined_time' => $joinedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_late' => $minutesLate,
+                    ];
+                } catch (\Exception $e) {
+                    // Skip this class if there's an error parsing dates
+                    continue;
+                }
             }
             
             $data['classes'] = $classes;
@@ -1305,33 +1398,52 @@ MSG;
                     continue;
                 }
                 
-                $classEndTime = Carbon::parse($class->class_date->format('Y-m-d') . ' ' . $class->end_time->format('H:i:s'));
-                $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
-                
-                $status = 'immediate';
-                $minutesAfterEnd = 0;
-                
-                if ($reportSubmittedTime->gt($classEndTime)) {
-                    $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
-                    if ($minutesAfterEnd <= 5) {
-                        $status = 'immediate';
-                    } elseif ($minutesAfterEnd <= 10) {
-                        $status = 'late';
-                    } else {
-                        $status = 'very_late';
-                    }
+                // Skip if required date/time fields are missing
+                if (!$class->class_date || !$class->end_time) {
+                    continue;
                 }
                 
-                $classes[] = [
-                    'id' => $class->id,
-                    'student_name' => $class->student->full_name ?? 'N/A',
-                    'course_name' => $class->course->name ?? 'N/A',
-                    'class_date' => $class->class_date->format('Y-m-d'),
-                    'end_time' => $class->end_time->format('H:i:s'),
-                    'submitted_time' => $reportSubmittedTime->format('Y-m-d H:i:s'),
-                    'status' => $status,
-                    'minutes_after_end' => $minutesAfterEnd,
-                ];
+                try {
+                    // Get class end datetime - handle both Carbon instances and strings
+                    $classDate = $class->class_date instanceof Carbon 
+                        ? $class->class_date->format('Y-m-d') 
+                        : Carbon::parse($class->class_date)->format('Y-m-d');
+                    
+                    $endTime = $class->end_time instanceof Carbon 
+                        ? $class->end_time->format('H:i:s') 
+                        : (is_string($class->end_time) ? $class->end_time : Carbon::parse($class->end_time)->format('H:i:s'));
+                    
+                    $classEndTime = Carbon::parse($classDate . ' ' . $endTime);
+                    $reportSubmittedTime = Carbon::parse($class->report_submitted_at);
+                    
+                    $status = 'immediate';
+                    $minutesAfterEnd = 0;
+                    
+                    if ($reportSubmittedTime->gt($classEndTime)) {
+                        $minutesAfterEnd = $reportSubmittedTime->diffInMinutes($classEndTime);
+                        if ($minutesAfterEnd <= 5) {
+                            $status = 'immediate';
+                        } elseif ($minutesAfterEnd <= 10) {
+                            $status = 'late';
+                        } else {
+                            $status = 'very_late';
+                        }
+                    }
+                    
+                    $classes[] = [
+                        'id' => $class->id,
+                        'student_name' => $class->student->full_name ?? 'N/A',
+                        'course_name' => $class->course->name ?? 'N/A',
+                        'class_date' => $classDate,
+                        'end_time' => $endTime,
+                        'submitted_time' => $reportSubmittedTime->format('Y-m-d H:i:s'),
+                        'status' => $status,
+                        'minutes_after_end' => $minutesAfterEnd,
+                    ];
+                } catch (\Exception $e) {
+                    // Skip this class if there's an error parsing dates
+                    continue;
+                }
             }
             
             $data['classes'] = $classes;

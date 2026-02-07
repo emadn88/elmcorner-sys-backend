@@ -24,4 +24,14 @@ interface WhatsAppInterface
      * @return bool Success status
      */
     public function sendTemplateMessage(string $phone, string $templateName, array $variables = []): bool;
+
+    /**
+     * Send an image
+     *
+     * @param string $phone Phone number in E.164 format
+     * @param string $imagePath Path to image file or image URL
+     * @param string|null $caption Optional caption for the image
+     * @return bool Success status
+     */
+    public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool;
 }
