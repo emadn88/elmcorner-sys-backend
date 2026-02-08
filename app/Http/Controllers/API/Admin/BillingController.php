@@ -33,10 +33,11 @@ class BillingController extends Controller
 
         $bills = $this->billingService->getBills($filters);
 
-        // Get statistics for current month
+        // Get statistics for current month (with same filters)
         $statistics = $this->billingService->getBillingStatistics(
             $filters['year'],
-            $filters['month']
+            $filters['month'],
+            $filters
         );
 
         return response()->json([
@@ -110,7 +111,7 @@ class BillingController extends Controller
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'student_id' => 'required|exists:students,id',
+            'student_id' => 'nullable|exists:students,id',
             'amount' => 'required|numeric|min:0',
             'currency' => 'nullable|string|max:3',
             'bill_date' => 'nullable|date',
@@ -143,13 +144,15 @@ class BillingController extends Controller
         $request->validate([
             'payment_method' => 'required|string|max:255',
             'payment_date' => 'nullable|date',
+            'payment_reason' => 'required|string|max:1000',
         ]);
 
         try {
             $bill = $this->billingService->markAsPaid(
                 (int)$id,
                 $request->input('payment_method'),
-                $request->input('payment_date')
+                $request->input('payment_date'),
+                $request->input('payment_reason')
             );
 
             return response()->json([
@@ -166,20 +169,29 @@ class BillingController extends Controller
     }
 
     /**
-     * Send bill via WhatsApp (wa.me link)
+     * Send bill via WhatsApp directly to student
      */
-    public function sendWhatsApp(string $id): JsonResponse
+    public function sendWhatsApp(Request $request, string $id): JsonResponse
     {
-        try {
-            $waMeUrl = $this->billingService->sendBillViaWhatsApp((int)$id);
+        $request->validate([
+            'whatsapp_number' => 'nullable|string|max:20',
+        ]);
 
+        try {
+            $whatsappNumber = $request->input('whatsapp_number');
+            $success = $this->billingService->sendBillViaWhatsApp((int)$id, $whatsappNumber);
+
+            if ($success) {
             return response()->json([
                 'status' => 'success',
-                'message' => 'WhatsApp link generated successfully',
-                'data' => [
-                    'wa_me_url' => $waMeUrl,
-                ],
-            ]);
+                    'message' => 'Bill sent via WhatsApp successfully',
+                ]);
+            } else {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to send WhatsApp message',
+                ], 400);
+            }
         } catch (\Exception $e) {
             return response()->json([
                 'status' => 'error',

@@ -66,16 +66,17 @@ class SendWhatsAppReminders extends Command
         $sentCount = 0;
 
         // 2 hours before - check if trial starts in 2 hours (within current minute) - STUDENT ONLY
+        // Use teacher time for timing (student time is only for display)
         $twoHoursBefore = $now->copy()->addHours(2);
         $trials2HoursBefore = TrialClass::where('status', 'pending')
             ->where('reminder_2hours_before_sent', false)
             ->whereDate('trial_date', $twoHoursBefore->format('Y-m-d'))
             ->get()
             ->filter(function ($trial) use ($twoHoursBefore) {
-                // Use student time if available, otherwise use default trial time
-                if ($trial->student_date && $trial->student_start_time) {
-                    $trialDate = Carbon::parse($trial->student_date);
-                    $startTime = Carbon::parse($trial->student_start_time);
+                // Always use teacher time for timing
+                if ($trial->teacher_date && $trial->teacher_start_time) {
+                    $trialDate = Carbon::parse($trial->teacher_date);
+                    $startTime = Carbon::parse($trial->teacher_start_time);
                 } else {
                     $trialDate = Carbon::parse($trial->trial_date);
                     $startTime = Carbon::parse($trial->start_time);
@@ -179,24 +180,18 @@ class SendWhatsAppReminders extends Command
         $sentCount = 0;
 
         // 2 hours before - check if class starts in 2 hours (within current minute) - STUDENT ONLY
+        // Use teacher time for timing (student time is only for display)
         $twoHoursBefore = $now->copy()->addHours(2);
         $classes2HoursBefore = ClassInstance::where('status', 'pending')
             ->where('reminder_2hours_before_sent', false)
             ->whereDate('class_date', $twoHoursBefore->format('Y-m-d'))
             ->get()
             ->filter(function ($class) use ($twoHoursBefore) {
-                // Use student time if available, otherwise use default class time
-                if ($class->student_date && $class->student_start_time) {
-                    $classDate = Carbon::parse($class->student_date);
-                    $startTime = is_string($class->student_start_time) 
-                        ? Carbon::parse($class->student_start_time) 
-                        : Carbon::parse($class->student_start_time);
-                } else {
-                    $classDate = Carbon::parse($class->class_date);
-                    $startTime = is_string($class->start_time) 
-                        ? Carbon::parse($class->start_time) 
-                        : Carbon::parse($class->start_time);
-                }
+                // Always use teacher time for timing
+                $classDate = Carbon::parse($class->class_date);
+                $startTime = is_string($class->start_time) 
+                    ? Carbon::parse($class->start_time) 
+                    : Carbon::parse($class->start_time);
                 $classDateTime = $classDate->copy()->setTime($startTime->hour, $startTime->minute, 0);
                 // Check if class starts within the current minute (2 hours from now)
                 return $classDateTime->format('Y-m-d H:i') === $twoHoursBefore->format('Y-m-d H:i');
@@ -212,12 +207,14 @@ class SendWhatsAppReminders extends Command
         }
 
         // 5 minutes before - check if class starts in 5 minutes (within current minute)
+        // Use teacher time for timing (student time is only for display)
         $fiveMinutesBefore = $now->copy()->addMinutes(5);
         $classes5MinBefore = ClassInstance::where('status', 'pending')
             ->where('reminder_5min_before_sent', false)
             ->whereDate('class_date', $fiveMinutesBefore->format('Y-m-d'))
             ->get()
             ->filter(function ($class) use ($fiveMinutesBefore) {
+                // Always use teacher time for timing
                 $startTime = is_string($class->start_time) 
                     ? Carbon::parse($class->start_time) 
                     : Carbon::parse($class->start_time);

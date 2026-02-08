@@ -18,6 +18,15 @@ class WasenderDriver implements WhatsAppInterface
     }
 
     /**
+     * Sanitize phone number - strip everything except digits
+     * Wasender expects digits only (E.164 without +)
+     */
+    protected function sanitizePhone(string $phone): string
+    {
+        return preg_replace('/[^0-9]/', '', $phone);
+    }
+
+    /**
      * Send a simple text message via Wasender API
      */
     public function sendMessage(string $phone, string $message, ?string $templateId = null, array $params = []): bool
@@ -28,8 +37,8 @@ class WasenderDriver implements WhatsAppInterface
                 return false;
             }
 
-            // Remove + from phone number for Wasender (they use E.164 without +)
-            $phoneNumber = ltrim($phone, '+');
+            // Sanitize phone number - strip all non-digit characters
+            $phoneNumber = $this->sanitizePhone($phone);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->apiKey,
@@ -82,6 +91,7 @@ class WasenderDriver implements WhatsAppInterface
 
     /**
      * Send an image via Wasender API
+     * Uses the same /send-message endpoint with the imageUrl field
      */
     public function sendImage(string $phone, string $imagePath, ?string $caption = null): bool
     {
@@ -91,8 +101,8 @@ class WasenderDriver implements WhatsAppInterface
                 return false;
             }
 
-            // Remove + from phone number for Wasender
-            $phoneNumber = ltrim($phone, '+');
+            // Sanitize phone number - strip all non-digit characters
+            $phoneNumber = $this->sanitizePhone($phone);
 
             // Check if imagePath is a URL or file path
             $imageUrl = $imagePath;
@@ -103,9 +113,10 @@ class WasenderDriver implements WhatsAppInterface
                 }
             }
 
+            // Wasender uses the same /send-message endpoint with imageUrl field (camelCase)
             $payload = [
                 'to' => $phoneNumber,
-                'image' => $imageUrl,
+                'imageUrl' => $imageUrl,
             ];
 
             if ($caption) {
@@ -115,14 +126,19 @@ class WasenderDriver implements WhatsAppInterface
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-            ])->post("{$this->baseUrl}/send-image", $payload);
+            ])->post("{$this->baseUrl}/send-message", $payload);
 
             if ($response->successful()) {
+                Log::info('Wasender image sent successfully', [
+                    'phone' => $phone,
+                    'imageUrl' => $imageUrl,
+                ]);
                 return true;
             }
 
             Log::error('Wasender WhatsApp image send failed', [
                 'phone' => $phone,
+                'imageUrl' => $imageUrl,
                 'response' => $response->json(),
                 'status' => $response->status(),
             ]);

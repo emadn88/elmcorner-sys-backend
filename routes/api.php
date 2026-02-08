@@ -48,6 +48,10 @@ Route::prefix('external')->group(function () {
         Route::get('/{token}', [PaymentController::class, 'show']);
         Route::get('/{token}/pdf', [PaymentController::class, 'downloadPdf']);
         Route::post('/{token}/process', [PaymentController::class, 'processPayment']);
+        Route::post('/{token}/paypal/create', [PaymentController::class, 'createPayPalPayment']);
+        Route::post('/{token}/paypal/execute', [PaymentController::class, 'executePayPalPayment']);
+        Route::post('/{token}/paypal/orders', [PaymentController::class, 'createPayPalOrder']);
+        Route::post('/{token}/paypal/orders/capture', [PaymentController::class, 'capturePayPalOrder']);
     });
 });
 

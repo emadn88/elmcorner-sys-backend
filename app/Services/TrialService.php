@@ -98,6 +98,7 @@ class TrialService
         $trial->load(['student', 'teacher.user', 'course']);
 
         // Generate and send trial image via WhatsApp
+        $imageSent = false;
         try {
             $trialImageService = app(\App\Services\TrialImageService::class);
             $whatsAppService = app(\App\Services\WhatsAppService::class);
@@ -114,12 +115,25 @@ class TrialService
                     $fullImageUrl = config('app.url') . '/' . ltrim($imageUrl, '/');
                 }
                 
-                $whatsAppService->sendImage(
+                $imageSent = $whatsAppService->sendImage(
                     $trial->student->whatsapp,
                     $fullImageUrl,
                     null, // No caption needed, image contains all info
                     'trial_image'
                 );
+                
+                if ($imageSent) {
+                    \Illuminate\Support\Facades\Log::info('Trial image sent successfully', [
+                        'trial_id' => $trial->id,
+                        'student_phone' => $trial->student->whatsapp,
+                        'image_url' => $fullImageUrl,
+                    ]);
+                } else {
+                    \Illuminate\Support\Facades\Log::warning('Trial image send failed, will fallback to text', [
+                        'trial_id' => $trial->id,
+                        'student_phone' => $trial->student->whatsapp,
+                    ]);
+                }
             }
         } catch (\Exception $e) {
             // Log error but don't fail trial creation
@@ -130,16 +144,37 @@ class TrialService
             ]);
         }
 
-        // Send WhatsApp notification to student and teacher
-        try {
-            $reminderService = app(\App\Services\ReminderService::class);
-            $reminderService->sendTrialCreationNotification($trial);
-        } catch (\Exception $e) {
-            // Log error but don't fail trial creation
-            \Illuminate\Support\Facades\Log::error('Failed to send trial creation notification', [
-                'trial_id' => $trial->id,
-                'error' => $e->getMessage(),
-            ]);
+        // Only send text notification if image was NOT sent successfully
+        // (Image contains all the info, so no need for duplicate text message)
+        if (!$imageSent) {
+            try {
+                $reminderService = app(\App\Services\ReminderService::class);
+                $reminderService->sendTrialCreationNotification($trial);
+            } catch (\Exception $e) {
+                // Log error but don't fail trial creation
+                \Illuminate\Support\Facades\Log::error('Failed to send trial creation notification', [
+                    'trial_id' => $trial->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        } else {
+            // Still send to teacher (they don't get the image, only student does)
+            try {
+                $reminderService = app(\App\Services\ReminderService::class);
+                // Send only to teacher, not student
+                $trial->load(['student', 'teacher.user', 'course']);
+                $teacherPhone = $trial->teacher->user->whatsapp ?? null;
+                if ($teacherPhone) {
+                    $teacherMessage = $reminderService->getTrialCreationMessageForTeacher($trial);
+                    $whatsAppService = app(\App\Services\WhatsAppService::class);
+                    $whatsAppService->sendMessage($teacherPhone, $teacherMessage);
+                }
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::error('Failed to send teacher notification', [
+                    'trial_id' => $trial->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         // Log activity

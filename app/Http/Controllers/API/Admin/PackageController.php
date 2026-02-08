@@ -413,26 +413,41 @@ class PackageController extends Controller
      * SIMPLE Flow:
      * 1. Mark the package as 'paid' (freezes its classes)
      * 2. Mark all bills for classes in this package as paid
+     * 3. Also mark all bills for this student that are related to this package
      * 
      * NOTE: New packages are created automatically when needed (when a class is attended
      * and no active package exists). No need to create one here.
      */
-    public function markAsPaid(string $id): JsonResponse
+    public function markAsPaid(Request $request, string $id): JsonResponse
     {
+        $request->validate([
+            'payment_reason' => 'required|string|max:1000',
+        ]);
+
         try {
             DB::beginTransaction();
             
             $package = Package::findOrFail($id);
+            $paymentReason = $request->input('payment_reason');
             
-            // Get all bills for classes in this package
-            $bills = Bill::whereHas('class', function ($query) use ($id) {
-                $query->where('package_id', $id);
-            })->get();
+            // Get all bills for classes in this package or directly linked to this package
+            $bills = Bill::where(function ($query) use ($id) {
+                $query->whereHas('class', function ($q) use ($id) {
+                    $q->where('package_id', $id);
+                })->orWhere('package_id', $id);
+            })->where('student_id', $package->student_id)
+              ->where('status', '!=', 'paid')
+              ->get();
 
-            // Mark all bills as paid
+            // Mark all bills as paid with the reason
             foreach ($bills as $bill) {
                 $bill->status = 'paid';
                 $bill->payment_date = now();
+                $bill->payment_reason = $paymentReason;
+                // Set a default payment method if not set
+                if (!$bill->payment_method) {
+                    $bill->payment_method = 'Package Payment';
+                }
                 $bill->save();
             }
 

@@ -73,6 +73,7 @@ class ReminderService
     public function sendTrialReminderToStudentOnly(TrialClass $trial, string $reminderType): bool
     {
         try {
+            // Ensure all relationships are loaded including teacher with meet_link
             $trial->load(['student', 'teacher.user', 'course', 'teacher']);
             
             $studentPhone = $trial->student->whatsapp;
@@ -188,11 +189,32 @@ class ReminderService
      */
     protected function getTrialReminderMessage(TrialClass $trial, string $reminderType, string $recipient = 'student'): string
     {
+        // Ensure teacher relationship is loaded with meet_link
+        if (!$trial->relationLoaded('teacher')) {
+            $trial->load('teacher');
+        }
+        
         $courseName = $trial->course->name ?? 'الدورة';
         $teacherName = $trial->teacher->user->name ?? 'المعلم';
         $studentName = $trial->student->full_name ?? 'الطالب';
         $supportPhone = config('whatsapp.support_phone', '+201099471391');
-        $meetLink = $trial->teacher->meet_link ?? '';
+        
+        // Get meet_link from teacher, ensure it's not null/empty
+        $meetLink = '';
+        if ($trial->teacher) {
+            // Get meet_link directly from teacher model
+            $meetLink = trim($trial->teacher->meet_link ?? '');
+            
+            // Log for debugging if meet_link is missing
+            if (empty($meetLink)) {
+                Log::warning('Trial reminder: Teacher meet_link is empty', [
+                    'trial_id' => $trial->id,
+                    'teacher_id' => $trial->teacher->id,
+                    'reminder_type' => $reminderType,
+                    'recipient' => $recipient,
+                ]);
+            }
+        }
         
         // Get student language for translation
         $studentLanguage = 'ar'; // Default to Arabic
@@ -211,41 +233,38 @@ class ReminderService
             }
         }
         
-        // Get time based on recipient
+        // Always use teacher time as primary time (for both student and teacher)
+        if ($trial->teacher_date && $trial->teacher_start_time) {
+            $date = $trial->teacher_date instanceof \Carbon\Carbon 
+                ? $trial->teacher_date->format('Y-m-d')
+                : $trial->teacher_date;
+            $startTime = is_string($trial->teacher_start_time) 
+                ? $trial->teacher_start_time 
+                : Carbon::parse($trial->teacher_start_time)->format('H:i');
+        } else {
+            $date = $trial->trial_date->format('Y-m-d');
+            $startTime = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
+        }
+        // Format time to 12-hour format
+        $timeParts = explode(':', $startTime);
+        $hour = (int)$timeParts[0];
+        $minute = $timeParts[1] ?? '00';
+        $ampm = $hour >= 12 ? 'PM' : 'AM';
+        $hour12 = $hour % 12 ?: 12;
+        $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        
+        // Get student time as additional info (if available and sending to student)
+        $studentTime = '';
         if ($recipient === 'student' && $trial->student_date && $trial->student_start_time) {
-            $date = $trial->student_date instanceof \Carbon\Carbon 
-                ? $trial->student_date->format('Y-m-d')
-                : $trial->student_date;
-            $startTime = is_string($trial->student_start_time) 
+            $studentStartTime = is_string($trial->student_start_time) 
                 ? $trial->student_start_time 
                 : Carbon::parse($trial->student_start_time)->format('H:i');
-            // Format time to 12-hour format
-            $timeParts = explode(':', $startTime);
-            $hour = (int)$timeParts[0];
-            $minute = $timeParts[1] ?? '00';
-            $ampm = $hour >= 12 ? 'PM' : 'AM';
-            $hour12 = $hour % 12 ?: 12;
-            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
-        } else {
-            // Use teacher time
-            if ($trial->teacher_date && $trial->teacher_start_time) {
-                $date = $trial->teacher_date instanceof \Carbon\Carbon 
-                    ? $trial->teacher_date->format('Y-m-d')
-                    : $trial->teacher_date;
-                $startTime = is_string($trial->teacher_start_time) 
-                    ? $trial->teacher_start_time 
-                    : Carbon::parse($trial->teacher_start_time)->format('H:i');
-            } else {
-                $date = $trial->trial_date->format('Y-m-d');
-                $startTime = is_string($trial->start_time) ? $trial->start_time : Carbon::parse($trial->start_time)->format('H:i');
-            }
-            // Format time to 12-hour format
-            $timeParts = explode(':', $startTime);
-            $hour = (int)$timeParts[0];
-            $minute = $timeParts[1] ?? '00';
-            $ampm = $hour >= 12 ? 'PM' : 'AM';
-            $hour12 = $hour % 12 ?: 12;
-            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+            $studentTimeParts = explode(':', $studentStartTime);
+            $studentHour = (int)$studentTimeParts[0];
+            $studentMinute = $studentTimeParts[1] ?? '00';
+            $studentAmpm = $studentHour >= 12 ? 'PM' : 'AM';
+            $studentHour12 = $studentHour % 12 ?: 12;
+            $studentTime = sprintf('%d:%s %s', $studentHour12, $studentMinute, $studentAmpm);
         }
 
         // Get status message based on recipient and reminder type
@@ -259,9 +278,14 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *Teacher:* {$teacherName}\n";
             $message .= "📚 *Course:* {$courseName}\n";
-            $message .= "🕐 *Time:* {$time}\n";
+            $message .= "🕐 *Time:* {$time}";
+            if (!empty($studentTime)) {
+                $message .= " (Your time: {$studentTime})";
+            }
+            $message .= "\n";
             
-            if ($meetLink) {
+            // Always include Zoom link for both student and teacher if available
+            if (!empty($meetLink)) {
                 $message .= "\n🔗 *Zoom Link:*\n{$meetLink}";
             }
             
@@ -273,9 +297,14 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *Professeur:* {$teacherName}\n";
             $message .= "📚 *Cours:* {$courseName}\n";
-            $message .= "🕐 *Heure:* {$time}\n";
+            $message .= "🕐 *Heure:* {$time}";
+            if (!empty($studentTime)) {
+                $message .= " (Votre heure: {$studentTime})";
+            }
+            $message .= "\n";
             
-            if ($meetLink) {
+            // Always include Zoom link for both student and teacher if available
+            if (!empty($meetLink)) {
                 $message .= "\n🔗 *Lien Zoom:*\n{$meetLink}";
             }
             
@@ -288,9 +317,14 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *المعلم:* {$teacherName}\n";
             $message .= "📚 *الدورة:* {$courseName}\n";
-            $message .= "🕐 *الوقت:* {$time}\n";
+            $message .= "🕐 *الوقت:* {$time}";
+            if (!empty($studentTime) && $recipient === 'student') {
+                $message .= " (وقتك: {$studentTime})";
+            }
+            $message .= "\n";
             
-            if ($meetLink) {
+            // Always include Zoom link for both student and teacher if available
+            if (!empty($meetLink)) {
                 $message .= "\n🔗 *رابط الزوم:*\n{$meetLink}";
             }
             
@@ -616,7 +650,7 @@ class ReminderService
     /**
      * Get trial creation message for teacher (always Arabic)
      */
-    protected function getTrialCreationMessageForTeacher(TrialClass $trial): string
+    public function getTrialCreationMessageForTeacher(TrialClass $trial): string
     {
         $courseName = $trial->course->name ?? 'الدورة';
         $studentName = $trial->student->full_name ?? 'الطالب';
@@ -846,37 +880,34 @@ class ReminderService
             }
         }
         
-        // Get time based on recipient
+        // Always use teacher time as primary time (for both student and teacher)
+        $classDate = $class->class_date instanceof \Carbon\Carbon 
+            ? $class->class_date 
+            : Carbon::parse($class->class_date);
+        $date = $classDate->format('Y-m-d');
+        $startTime = is_string($class->start_time) 
+            ? Carbon::parse($class->start_time)->format('H:i')
+            : Carbon::parse($class->start_time)->format('H:i');
+        // Format time to 12-hour format
+        $timeParts = explode(':', $startTime);
+        $hour = (int)$timeParts[0];
+        $minute = $timeParts[1] ?? '00';
+        $ampm = $hour >= 12 ? 'PM' : 'AM';
+        $hour12 = $hour % 12 ?: 12;
+        $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+        
+        // Get student time as additional info (if available and sending to student)
+        $studentTime = '';
         if ($recipient === 'student' && $class->student_date && $class->student_start_time) {
-            $date = $class->student_date instanceof \Carbon\Carbon 
-                ? $class->student_date->format('Y-m-d')
-                : $class->student_date;
-            $startTime = is_string($class->student_start_time) 
+            $studentStartTime = is_string($class->student_start_time) 
                 ? $class->student_start_time 
                 : Carbon::parse($class->student_start_time)->format('H:i');
-            // Format time to 12-hour format
-            $timeParts = explode(':', $startTime);
-            $hour = (int)$timeParts[0];
-            $minute = $timeParts[1] ?? '00';
-            $ampm = $hour >= 12 ? 'PM' : 'AM';
-            $hour12 = $hour % 12 ?: 12;
-            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
-        } else {
-            // Use teacher time
-            $classDate = $class->class_date instanceof \Carbon\Carbon 
-                ? $class->class_date 
-                : Carbon::parse($class->class_date);
-            $date = $classDate->format('Y-m-d');
-            $startTime = is_string($class->start_time) 
-                ? Carbon::parse($class->start_time)->format('H:i')
-                : Carbon::parse($class->start_time)->format('H:i');
-            // Format time to 12-hour format
-            $timeParts = explode(':', $startTime);
-            $hour = (int)$timeParts[0];
-            $minute = $timeParts[1] ?? '00';
-            $ampm = $hour >= 12 ? 'PM' : 'AM';
-            $hour12 = $hour % 12 ?: 12;
-            $time = sprintf('%d:%s %s', $hour12, $minute, $ampm);
+            $studentTimeParts = explode(':', $studentStartTime);
+            $studentHour = (int)$studentTimeParts[0];
+            $studentMinute = $studentTimeParts[1] ?? '00';
+            $studentAmpm = $studentHour >= 12 ? 'PM' : 'AM';
+            $studentHour12 = $studentHour % 12 ?: 12;
+            $studentTime = sprintf('%d:%s %s', $studentHour12, $studentMinute, $studentAmpm);
         }
 
         // Get status message based on recipient and reminder type
@@ -890,7 +921,11 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *Teacher:* {$teacherName}\n";
             $message .= "📚 *Course:* {$courseName}\n";
-            $message .= "🕐 *Time:* {$time}\n";
+            $message .= "🕐 *Time:* {$time}";
+            if (!empty($studentTime)) {
+                $message .= " (Your time: {$studentTime})";
+            }
+            $message .= "\n";
             
             if ($meetLink) {
                 $message .= "\n🔗 *Zoom Link:*\n{$meetLink}";
@@ -904,7 +939,11 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *Professeur:* {$teacherName}\n";
             $message .= "📚 *Cours:* {$courseName}\n";
-            $message .= "🕐 *Heure:* {$time}\n";
+            $message .= "🕐 *Heure:* {$time}";
+            if (!empty($studentTime)) {
+                $message .= " (Votre heure: {$studentTime})";
+            }
+            $message .= "\n";
             
             if ($meetLink) {
                 $message .= "\n🔗 *Lien Zoom:*\n{$meetLink}";
@@ -943,7 +982,11 @@ class ReminderService
             $message .= "{$statusMessage}\n\n";
             $message .= "👨‍🏫 *المعلم:* {$teacherName}\n";
             $message .= "📚 *الدورة:* {$courseName}\n";
-            $message .= "🕐 *الوقت:* {$time}\n";
+            $message .= "🕐 *الوقت:* {$time}";
+            if (!empty($studentTime) && $recipient === 'student') {
+                $message .= " (وقتك: {$studentTime})";
+            }
+            $message .= "\n";
             
             if ($meetLink) {
                 $message .= "\n🔗 *رابط الزوم:*\n{$meetLink}";

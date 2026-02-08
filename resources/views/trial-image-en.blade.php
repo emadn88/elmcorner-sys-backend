@@ -138,11 +138,11 @@
         }
 
         .header-title {
-            font-size: 42px;
+            font-size: 56px;
             font-weight: 900;
             color: white;
             background: rgba(16, 185, 129, 0.9);
-            padding: 20px 40px;
+            padding: 25px 50px;
             border-radius: 20px;
             display: inline-block;
             margin-bottom: 15px;
@@ -151,22 +151,16 @@
         }
 
         .celebrate-icon {
-            font-size: 48px;
+            font-size: 64px;
             display: inline-block;
             margin-left: 15px;
-            animation: bounce 2s infinite;
-        }
-
-        @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
         }
 
         .header-subtitle {
-            font-size: 22px;
+            font-size: 30px;
             color: white;
             background: rgba(99, 102, 241, 0.85);
-            padding: 12px 30px;
+            padding: 15px 40px;
             border-radius: 15px;
             display: inline-block;
             font-weight: 600;
@@ -190,23 +184,145 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         }
+        
+        /* Reduce height for date section */
+        .time-section:first-child {
+            padding: 20px 25px;
+        }
 
         .time-icon {
-            font-size: 32px;
-            margin-bottom: 10px;
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 12px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* Calendar icon - pure CSS */
+        .icon-calendar {
+            width: 50px;
+            height: 50px;
+            border: 3px solid white;
+            border-radius: 8px;
+            position: relative;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .icon-calendar::before {
+            content: "";
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 40px;
+            height: 8px;
+            background: white;
+            border-radius: 4px 4px 0 0;
+        }
+        .icon-calendar::after {
+            content: "";
+            position: absolute;
+            top: 8px;
+            left: 6px;
+            width: 8px;
+            height: 8px;
+            background: white;
+            border-radius: 2px;
+            box-shadow: 12px 0 0 white, 24px 0 0 white, 0 12px 0 white, 12px 12px 0 white, 24px 12px 0 white;
+        }
+        
+        /* Clock icon - pure CSS */
+        .icon-clock {
+            width: 50px;
+            height: 50px;
+            border: 3px solid white;
+            border-radius: 50%;
+            position: relative;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .icon-clock::before {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 3px;
+            height: 15px;
+            background: white;
+            transform-origin: bottom center;
+            transform: translate(-50%, -100%) rotate(45deg);
+        }
+        .icon-clock::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 12px;
+            height: 3px;
+            background: white;
+            transform-origin: center;
+            transform: translate(-50%, -50%) rotate(45deg);
+        }
+        
+        /* Stopwatch icon - pure CSS */
+        .icon-stopwatch {
+            width: 50px;
+            height: 50px;
+            border: 3px solid white;
+            border-radius: 50%;
+            position: relative;
+            background: rgba(255, 255, 255, 0.1);
+        }
+        .icon-stopwatch::before {
+            content: "";
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 4px;
+            height: 12px;
+            background: white;
+            border-radius: 2px;
+        }
+        .icon-stopwatch::after {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 12px;
+            background: white;
+            transform-origin: bottom center;
+            transform: translate(-50%, -50%) rotate(30deg);
         }
 
         .time-label {
-            font-size: 16px;
-            font-weight: 700;
-            color: rgba(255, 255, 255, 0.8);
-            margin-bottom: 8px;
+            font-size: 26px;
+            font-weight: 900;
+            color: white;
+            background: rgba(99, 102, 241, 0.8);
+            padding: 8px 16px;
+            border-radius: 10px;
+            margin-bottom: 12px;
+            display: inline-block;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
         }
 
         .time-value {
-            font-size: 24px;
-            font-weight: 800;
+            font-size: 29px;
+            font-weight: 900;
             color: white;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+            line-height: 1.2;
+        }
+        
+        /* Date-specific styling - smaller font and reduced height */
+        .time-section:first-child .time-value {
+            font-size: 22px;
+            line-height: 1.1;
         }
 
         /* Info Cards */
@@ -231,21 +347,26 @@
         }
 
         .card-label {
-            font-size: 18px;
-            font-weight: 700;
-            color: rgba(255, 255, 255, 0.8);
-            margin-bottom: 12px;
+            font-size: 28px;
+            font-weight: 900;
+            color: white;
+            background: rgba(16, 185, 129, 0.8);
+            padding: 10px 20px;
+            border-radius: 12px;
+            margin-bottom: 18px;
+            display: inline-block;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
         }
 
         .card-value {
-            font-size: 28px;
+            font-size: 38px;
             font-weight: 700;
             color: white;
             line-height: 1.3;
         }
 
         .card-value-small {
-            font-size: 20px;
+            font-size: 28px;
             font-weight: 600;
             color: white;
         }
@@ -255,44 +376,42 @@
         .notes-card {
             background: rgba(30, 41, 59, 0.85);
             border-radius: 24px;
-            padding: 35px;
+            padding: 24px;
             border: 1px solid rgba(255, 255, 255, 0.1);
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            margin-bottom: 12px;
         }
 
         .notes-label {
-            font-size: 18px;
-            font-weight: 700;
-            color: rgba(255, 255, 255, 0.8);
-            margin-bottom: 15px;
-        }
-
-        .notes-text {
-            font-size: 20px;
+            font-size: 28px;
+            font-weight: 900;
             color: white;
-            line-height: 1.8;
-            font-weight: 500;
-            text-align: center;
+            background: rgba(99, 102, 241, 0.8);
+            padding: 8px 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+            display: inline-block;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
         }
 
         .notes-motivational {
-            font-size: 22px;
+            font-size: 30px;
             color: white;
-            line-height: 1.8;
+            line-height: 1.4;
             font-weight: 700;
             text-align: center;
-            margin-bottom: 15px;
+            margin-bottom: 14px;
         }
 
         .notes-dua {
-            font-size: 19px;
+            font-size: 26px;
             color: rgba(255, 255, 255, 0.95);
-            line-height: 1.8;
+            line-height: 1.4;
             font-weight: 600;
             text-align: center;
             font-style: italic;
-            margin-top: 15px;
-            padding-top: 15px;
+            margin-top: 14px;
+            padding-top: 14px;
             border-top: 1px solid rgba(255, 255, 255, 0.2);
         }
 
@@ -300,18 +419,20 @@
         .footer {
             margin-top: auto;
             text-align: center;
-            padding-top: 30px;
+            padding-top: 20px;
+            padding-bottom: 20px;
         }
 
         .footer-text {
-            font-size: 24px;
+            font-size: 36px;
             color: white;
-            font-weight: 800;
-            background: rgba(99, 102, 241, 0.9);
-            padding: 15px 40px;
+            font-weight: 900;
+            background: rgba(99, 102, 241, 0.95);
+            padding: 20px 60px;
             border-radius: 15px;
             display: inline-block;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+            letter-spacing: 1px;
         }
     </style>
 </head>
@@ -320,10 +441,7 @@
     <div class="overlay"></div>
     <div class="blur-layer"></div>
     
-    <!-- Logo -->
-    @if(isset($logoImage) && $logoImage)
-    <img src="{{ $logoImage }}" alt="Logo" class="logo" />
-    @endif
+    <!-- Logo - Removed -->
     
     <!-- Decorative Shapes -->
     <div class="shape shape-1"></div>
@@ -337,7 +455,6 @@
         <div class="header">
             <h1 class="header-title">
                 Your Trial Class Has Been Successfully Booked
-                <span class="celebrate-icon">🎉</span>
             </h1>
             <p class="header-subtitle">Your Learning Journey Begins Here</p>
         </div>
@@ -358,21 +475,18 @@
         <!-- Time Sections -->
         <div class="time-sections">
             <div class="time-section">
-                <div class="time-icon">📅</div>
+                <div class="time-icon icon-calendar"></div>
                 <div class="time-label">Day & Date</div>
                 <div class="time-value">
                     @php
-                        $date = $trial->trial_date ?? null;
+                        // Use student date if available, fallback to trial_date (teacher time)
+                        $date = $trial->student_date ?? $trial->trial_date ?? null;
                         if ($date) {
                             if (is_string($date)) {
                                 $carbonDate = \Carbon\Carbon::parse($date);
-                                $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                                $months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-                                echo $days[$carbonDate->dayOfWeek] . '<br>' . $carbonDate->format('F d, Y');
+                                echo $carbonDate->format('d/n/Y');
                             } else {
-                                $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                                $months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-                                echo $days[$date->dayOfWeek] . '<br>' . $date->format('F d, Y');
+                                echo $date->format('d/n/Y');
                             }
                         } else {
                             echo 'N/A';
@@ -382,12 +496,14 @@
             </div>
 
             <div class="time-section">
-                <div class="time-icon">⏰</div>
+                <div class="time-icon icon-clock"></div>
                 <div class="time-label">Start Time</div>
                 <div class="time-value">
                     @php
-                        if (isset($trial->start_time)) {
-                            $time = substr($trial->start_time, 0, 5);
+                        // Use student start time if available, fallback to start_time (teacher time)
+                        $startTime = $trial->student_start_time ?? $trial->start_time ?? null;
+                        if ($startTime) {
+                            $time = substr($startTime, 0, 5);
                             $parts = explode(':', $time);
                             $hour = (int)$parts[0];
                             $minute = $parts[1];
@@ -402,12 +518,14 @@
             </div>
 
             <div class="time-section">
-                <div class="time-icon">⏱️</div>
+                <div class="time-icon icon-stopwatch"></div>
                 <div class="time-label">End Time</div>
                 <div class="time-value">
                     @php
-                        if (isset($trial->end_time)) {
-                            $time = substr($trial->end_time, 0, 5);
+                        // Use student end time if available, fallback to end_time (teacher time)
+                        $endTime = $trial->student_end_time ?? $trial->end_time ?? null;
+                        if ($endTime) {
+                            $time = substr($endTime, 0, 5);
                             $parts = explode(':', $time);
                             $hour = (int)$parts[0];
                             $minute = $parts[1];
@@ -423,17 +541,14 @@
         </div>
 
         <!-- Notes -->
-        <div class="notes-card" style="margin-bottom: 20px;">
+        <div class="notes-card">
             <div class="notes-label">Important Notes</div>
             <div class="notes-motivational">
-                Please be on time, we'll be waiting for you! 🎯
+                Please be on time, we'll be waiting for you!
             </div>
-            @if(isset($trial->notes) && !empty($trial->notes))
-            <div class="notes-text">{{ $trial->notes }}</div>
-            @endif
             <div class="notes-dua">
-                🌟 We wish you success and open doors to knowledge and learning<br>
-                💫 Best of luck and success in your educational journey
+                We wish you success and open doors to knowledge and learning<br>
+                Best of luck and success in your educational journey
             </div>
         </div>
 

@@ -40,9 +40,20 @@ class BillingService
             ->where('is_custom', false)
             ->first();
 
+        // Get package to use student's hour_price instead of teacher's hourly_rate
+        $package = Package::findOrFail($class->package_id);
+        $student = Student::findOrFail($class->student_id);
         $teacher = Teacher::findOrFail($class->teacher_id);
         $durationHours = $class->duration / 60.0;
-        $amount = $durationHours * $teacher->hourly_rate;
+        // Use package hour_price if available, otherwise fall back to teacher hourly_rate
+        $hourPrice = $package->hour_price ?? 0;
+        if ($hourPrice <= 0) {
+            $hourPrice = $teacher->hourly_rate ?? 0;
+        }
+        $amount = $durationHours * $hourPrice;
+        
+        // Use package currency, fall back to student currency, then USD
+        $currency = $package->currency ?? $student->currency ?? 'USD';
 
         if ($existingBill) {
             // Add class to existing bill
@@ -52,6 +63,10 @@ class BillingService
                 $existingBill->class_ids = $classIds;
                 $existingBill->total_hours = ($existingBill->total_hours ?? 0) + $durationHours;
                 $existingBill->amount = $existingBill->amount + $amount;
+                // Update currency if not set or if it's different (should match package/student)
+                if (!$existingBill->currency || $existingBill->currency !== $currency) {
+                    $existingBill->currency = $currency;
+                }
                 $existingBill->save();
             }
             return $existingBill->fresh();
@@ -66,7 +81,7 @@ class BillingService
                 'duration' => $class->duration,
                 'total_hours' => $durationHours,
                 'amount' => $amount,
-                'currency' => $teacher->currency ?? 'USD',
+                'currency' => $currency,
                 'status' => 'pending',
                 'bill_date' => $class->class_date,
                 'is_custom' => false,
@@ -79,14 +94,17 @@ class BillingService
      */
     public function createCustomBill(array $data): Bill
     {
-        $student = Student::findOrFail($data['student_id']);
+        $student = null;
+        if (isset($data['student_id']) && $data['student_id']) {
+            $student = Student::findOrFail($data['student_id']);
+        }
 
         return Bill::create([
-            'student_id' => $data['student_id'],
+            'student_id' => $data['student_id'] ?? null,
             'teacher_id' => $data['teacher_id'] ?? null,
             'package_id' => $data['package_id'] ?? null,
             'amount' => $data['amount'],
-            'currency' => $data['currency'] ?? $student->currency ?? 'USD',
+            'currency' => $data['currency'] ?? ($student ? $student->currency : 'USD'),
             'status' => 'pending',
             'bill_date' => $data['bill_date'] ?? now()->toDateString(),
             'description' => $data['description'] ?? null,
@@ -135,12 +153,23 @@ class BillingService
     /**
      * Get billing statistics for a month
      */
-    public function getBillingStatistics(int $year, int $month): array
+    public function getBillingStatistics(int $year, int $month, array $filters = []): array
     {
         $startDate = Carbon::create($year, $month, 1)->startOfMonth();
         $endDate = Carbon::create($year, $month, 1)->endOfMonth();
 
-        $bills = Bill::whereBetween('bill_date', [$startDate, $endDate])->get();
+        $query = Bill::whereBetween('bill_date', [$startDate, $endDate]);
+        
+        // Apply is_custom filter if provided
+        if (isset($filters['is_custom'])) {
+            $isCustom = $filters['is_custom'];
+            if (is_string($isCustom)) {
+                $isCustom = filter_var($isCustom, FILTER_VALIDATE_BOOLEAN);
+            }
+            $query->where('is_custom', (bool)$isCustom);
+        }
+        
+        $bills = $query->get();
 
         $dueBills = $bills->whereIn('status', ['pending', 'sent']);
         $paidBills = $bills->where('status', 'paid');
@@ -179,15 +208,22 @@ class BillingService
     /**
      * Mark bill as paid
      */
-    public function markAsPaid(int $billId, string $paymentMethod, ?string $paymentDate = null): Bill
+    public function markAsPaid(int $billId, string $paymentMethod, ?string $paymentDate = null, ?string $paymentReason = null, ?string $paypalTransactionId = null): Bill
     {
         $bill = Bill::findOrFail($billId);
 
-        $bill->update([
+        $updateData = [
             'status' => 'paid',
             'payment_method' => $paymentMethod,
             'payment_date' => $paymentDate ? Carbon::parse($paymentDate) : now(),
-        ]);
+            'payment_reason' => $paymentReason,
+        ];
+
+        if ($paypalTransactionId) {
+            $updateData['paypal_transaction_id'] = $paypalTransactionId;
+        }
+
+        $bill->update($updateData);
 
         return $bill->fresh();
     }
@@ -242,14 +278,22 @@ class BillingService
     }
 
     /**
-     * Send bill via WhatsApp using wa.me link
+     * Send bill via WhatsApp directly to student
      */
-    public function sendBillViaWhatsApp(int $billId): string
+    public function sendBillViaWhatsApp(int $billId, ?string $whatsappNumber = null): bool
     {
         $bill = Bill::with('student')->findOrFail($billId);
 
-        if (!$bill->student->whatsapp) {
-            throw new \Exception('Student does not have a WhatsApp number');
+        // Determine WhatsApp number
+        $phone = null;
+        if ($whatsappNumber) {
+            // Use provided WhatsApp number
+            $phone = $whatsappNumber;
+        } elseif ($bill->student && $bill->student->whatsapp) {
+            // Use student's WhatsApp number
+            $phone = $bill->student->whatsapp;
+        } else {
+            throw new \Exception('No WhatsApp number available. Please provide a WhatsApp number.');
         }
 
         // Generate payment token if not exists
@@ -262,44 +306,134 @@ class BillingService
         $tokenSuffix = str_replace('elmcorner', '', $bill->payment_token);
         $paymentUrl = url("/payment/{$tokenSuffix}");
         
-        // Format message
-        $message = $this->formatBillWhatsAppMessage($bill, $paymentUrl);
+        // Get student language (default to English, only use French if student is French)
+        $studentLanguage = 'en'; // Default to English
+        if ($bill->student) {
+            $studentLanguage = strtolower(trim($bill->student->language ?? 'en'));
+            if (!in_array($studentLanguage, ['en', 'fr'])) {
+                $studentLanguage = 'en'; // Default to English
+            }
+        }
 
-        // Open wa.me link (frontend will handle this)
-        $phone = $bill->student->whatsapp;
+        // Format message based on bill type
+        $message = $bill->is_custom 
+            ? $this->formatCustomBillWhatsAppMessage($bill, $paymentUrl, $studentLanguage)
+            : $this->formatAutoBillWhatsAppMessage($bill, $paymentUrl, $studentLanguage);
+
+        // Send directly via WhatsApp service
         // Remove any non-digit characters except +
         $cleanPhone = preg_replace('/[^\d+]/', '', $phone);
         if (!str_starts_with($cleanPhone, '+')) {
             $cleanPhone = '+' . $cleanPhone;
         }
 
-        $waMeUrl = "https://wa.me/{$cleanPhone}?text=" . urlencode($message);
+        $success = $this->whatsAppService->sendMessage($cleanPhone, $message);
 
+        if ($success) {
         // Update bill status and sent_at
         $bill->update([
             'status' => 'sent',
             'sent_at' => now(),
         ]);
+        }
 
-        return $waMeUrl;
+        return $success;
     }
 
     /**
-     * Format WhatsApp message for bill
+     * Format WhatsApp message for custom bill (manual/advance payment)
      */
-    protected function formatBillWhatsAppMessage(Bill $bill, string $paymentUrl): string
+    protected function formatCustomBillWhatsAppMessage(Bill $bill, string $paymentUrl, string $language = 'en'): string
+    {
+        $studentName = $bill->student ? $bill->student->full_name : 'Customer';
+        $amount = number_format($bill->amount, 2);
+        $currency = $bill->currency;
+        $invoiceDate = $bill->bill_date->format('Y-m-d');
+        $reason = $bill->description ?? '';
+        $academyName = 'ElmCorner Academy';
+
+        // Normalize language - default to English, only use French if student is French
+        $language = strtolower(trim($language));
+        if (!in_array($language, ['en', 'fr'])) {
+            $language = 'en';
+        }
+
+        if ($language === 'fr') {
+            // French template
+            $message = "🎓 *{$academyName}*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📋 *Facture Manuelle*\n";
+            $message .= "Étudiant: *{$studentName}*\n";
+            $message .= "Date d'émission: *{$invoiceDate}*\n";
+            $message .= "Montant: *{$amount} {$currency}*\n";
+            if ($reason) {
+                $message .= "Raison: *{$reason}*\n";
+            }
+            $message .= "\n💳 *Payer en toute sécurité:*\n";
+            $message .= "{$paymentUrl}\n\n";
+            $message .= "Merci d'avoir choisi {$academyName}! 🌟";
+        } else {
+            // English template (default)
+            $message = "🎓 *{$academyName}*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📋 *Manual Invoice*\n";
+            $message .= "Student: *{$studentName}*\n";
+            $message .= "Issue Date: *{$invoiceDate}*\n";
+            $message .= "Amount: *{$amount} {$currency}*\n";
+            if ($reason) {
+                $message .= "Reason: *{$reason}*\n";
+            }
+            $message .= "\n💳 *Pay Securely:*\n";
+            $message .= "{$paymentUrl}\n\n";
+            $message .= "Thank you for choosing {$academyName}! 🌟";
+        }
+
+        return $message;
+    }
+
+    /**
+     * Format WhatsApp message for auto bill (automatic invoice)
+     */
+    protected function formatAutoBillWhatsAppMessage(Bill $bill, string $paymentUrl, string $language = 'en'): string
     {
         $studentName = $bill->student->full_name;
         $amount = number_format($bill->amount, 2);
         $currency = $bill->currency;
-        $totalHours = $bill->total_hours ?? ($bill->duration / 60);
+        $invoiceDate = $bill->bill_date->format('Y-m-d');
+        $invoiceNumber = '#' . str_pad($bill->id, 6, '0', STR_PAD_LEFT);
+        $academyName = 'ElmCorner Academy';
 
-        $message = "Hello {$studentName},\n\n";
-        $message .= "Your bill is ready for payment.\n\n";
-        $message .= "Total Hours: {$totalHours} hours\n";
-        $message .= "Total Amount: {$amount} {$currency}\n\n";
-        $message .= "Please click the link below to view and pay:\n";
-        $message .= $paymentUrl;
+        // Normalize language - default to English, only use French if student is French
+        $language = strtolower(trim($language));
+        if (!in_array($language, ['en', 'fr'])) {
+            $language = 'en';
+        }
+
+        if ($language === 'fr') {
+            // French template
+            $message = "🎓 *{$academyName}*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📋 *Facture Auto*\n";
+            $message .= "Étudiant: *{$studentName}*\n";
+            $message .= "Numéro de facture: *{$invoiceNumber}*\n";
+            $message .= "Date d'émission: *{$invoiceDate}*\n";
+            $message .= "Montant: *{$amount} {$currency}*\n\n";
+            $message .= "💳 *Payer en toute sécurité:*\n";
+            $message .= "{$paymentUrl}\n\n";
+            $message .= "Merci d'avoir choisi {$academyName}! 🌟";
+        } else {
+            // English template (default)
+            $message = "🎓 *{$academyName}*\n";
+            $message .= "━━━━━━━━━━━━━━━━━━\n\n";
+            $message .= "📋 *Auto Invoice*\n";
+            $message .= "Student: *{$studentName}*\n";
+            $message .= "Invoice Number: *{$invoiceNumber}*\n";
+            $message .= "Issue Date: *{$invoiceDate}*\n";
+            $message .= "Amount: *{$amount} {$currency}*\n\n";
+            $message .= "💳 *Pay Securely:*\n";
+            $message .= "{$paymentUrl}\n\n";
+            $message .= "Thank you for choosing {$academyName}! 🌟";
+        }
 
         return $message;
     }
@@ -559,7 +693,12 @@ class BillingService
         }
 
         if (isset($filters['is_custom'])) {
-            $query->where('is_custom', $filters['is_custom']);
+            // Convert string "true"/"false" to boolean if needed
+            $isCustom = $filters['is_custom'];
+            if (is_string($isCustom)) {
+                $isCustom = filter_var($isCustom, FILTER_VALIDATE_BOOLEAN);
+            }
+            $query->where('is_custom', (bool)$isCustom);
         }
 
         $bills = $query->orderBy('bill_date', 'desc')

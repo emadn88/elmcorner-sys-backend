@@ -20,6 +20,8 @@ class Bill extends Model
         'bill_date',
         'payment_date',
         'payment_method',
+        'payment_reason',
+        'paypal_transaction_id',
         'payment_token',
         'is_custom',
         'sent_at',

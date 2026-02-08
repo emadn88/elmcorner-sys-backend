@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\TrialImageController;
+use App\Http\Controllers\ClassReportImageController;
 
 Route::get('/', function () {
     return view('welcome');
@@ -16,3 +17,4 @@ Route::get('/payment/{token}', function ($token) {
 
 // Public test route for trial image generation
 Route::get('/test/trial-image', [TrialImageController::class, 'generateTestImage']);
+Route::get('/test/class-report-image', [ClassReportImageController::class, 'generateTestImage']);

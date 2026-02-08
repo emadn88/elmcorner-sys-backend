@@ -2,33 +2,39 @@
 
 namespace App\Services;
 
-use App\Models\TrialClass;
+use App\Models\ClassInstance;
 use Illuminate\Support\Facades\View;
 use Spatie\Browsershot\Browsershot;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 
-class TrialImageService
+class ClassReportImageService
 {
     /**
-     * Generate a modern trial details image
+     * Generate a professional class report image
      * 
-     * @param TrialClass|array $trialData TrialClass model or array of trial data
+     * @param ClassInstance|array $classData ClassInstance model or array of class data
      * @return string Path to generated image or binary image data
      */
-    public function generateTrialImage($trialData, bool $returnBinary = false)
+    public function generateClassReportImage($classData, bool $returnBinary = false)
     {
         try {
             // Handle model instance or array
-            if ($trialData instanceof TrialClass) {
-                // Load student relationship if not already loaded
-                if (!$trialData->relationLoaded('student')) {
-                    $trialData->load('student');
+            if ($classData instanceof ClassInstance) {
+                // Load relationships if not already loaded
+                if (!$classData->relationLoaded('student')) {
+                    $classData->load('student');
                 }
-                $trial = $trialData;
+                if (!$classData->relationLoaded('teacher')) {
+                    $classData->load('teacher.user');
+                }
+                if (!$classData->relationLoaded('course')) {
+                    $classData->load('course');
+                }
+                $class = $classData;
             } else {
                 // Convert array to object if needed
-                $trial = is_array($trialData) ? (object) $trialData : $trialData;
+                $class = is_array($classData) ? (object) $classData : $classData;
             }
             
             // Get background image as base64 for Browsershot
@@ -52,39 +58,37 @@ class TrialImageService
                 $logoMimeType = $logoInfo['mime'] ?? 'image/png';
                 $logoBase64 = 'data:' . $logoMimeType . ';base64,' . base64_encode($logoData);
             } else {
-                // Log if logo not found for debugging
                 Log::warning('Logo file not found', ['path' => $logoPath]);
             }
             
             // Determine template based on student language
-            $template = 'trial-image'; // Default to Arabic
-            if (isset($trial->student)) {
-                $student = is_object($trial->student) ? $trial->student : (object)$trial->student;
+            $template = 'class-report-image'; // Default to Arabic
+            if (isset($class->student)) {
+                $student = is_object($class->student) ? $class->student : (object)$class->student;
                 $language = $student->language ?? 'ar';
                 
                 switch ($language) {
                     case 'en':
-                        $template = 'trial-image-en';
+                        $template = 'class-report-image-en';
                         break;
                     case 'fr':
-                        $template = 'trial-image-fr';
+                        $template = 'class-report-image-fr';
                         break;
                     case 'ar':
                     default:
-                        $template = 'trial-image';
+                        $template = 'class-report-image';
                         break;
                 }
-            } elseif (isset($trial->student_id) && $trialData instanceof TrialClass) {
-                // If student relationship not loaded, try to get language from student model
+            } elseif (isset($class->student_id) && $classData instanceof ClassInstance) {
                 try {
-                    $student = \App\Models\Student::find($trial->student_id);
+                    $student = \App\Models\Student::find($class->student_id);
                     if ($student && $student->language) {
                         switch ($student->language) {
                             case 'en':
-                                $template = 'trial-image-en';
+                                $template = 'class-report-image-en';
                                 break;
                             case 'fr':
-                                $template = 'trial-image-fr';
+                                $template = 'class-report-image-fr';
                                 break;
                         }
                     }
@@ -95,7 +99,7 @@ class TrialImageService
             
             // Render HTML template
             $html = View::make($template, [
-                'trial' => $trial,
+                'class' => $class,
                 'backgroundImage' => $backgroundBase64,
                 'logoImage' => $logoBase64,
             ])->render();
@@ -114,12 +118,12 @@ class TrialImageService
             }
 
             // Save to storage
-            $filename = 'trials/trial_' . ($trial->id ?? time()) . '_' . time() . '.png';
+            $filename = 'class-reports/class_' . ($class->id ?? time()) . '_' . time() . '.png';
             Storage::disk('public')->put($filename, $image);
 
             return Storage::disk('public')->url($filename);
         } catch (\Exception $e) {
-            Log::error('Failed to generate trial image', [
+            Log::error('Failed to generate class report image', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
@@ -128,17 +132,20 @@ class TrialImageService
     }
 
     /**
-     * Generate sample trial data for testing
+     * Generate sample class data for testing
      */
-    public function generateSampleTrialData(): array
+    public function generateSampleClassData(): array
     {
         return [
-            'id' => 999,
-            'status' => 'pending',
-            'trial_date' => now()->addDays(2)->format('Y-m-d'),
-            'start_time' => '14:00:00',
-            'end_time' => '15:00:00',
-            'notes' => 'This is a sample trial class. Please arrive on time and bring your materials.',
+            'id' => 888,
+            'status' => 'attended',
+            'class_date' => now()->subDays(1)->format('Y-m-d'),
+            'start_time' => now()->subDays(1)->setTime(14, 0, 0)->format('H:i:s'),
+            'end_time' => now()->subDays(1)->setTime(15, 0, 0)->format('H:i:s'),
+            'duration' => 60,
+            'class_report' => 'Excellent class today! The student showed great progress in conversation skills. We covered advanced grammar topics and practiced speaking exercises. The student was very engaged and asked insightful questions.',
+            'student_evaluation' => 'Excellent',
+            'notes' => 'Student needs to practice more on past tense. Recommended additional reading materials.',
             'student' => (object) [
                 'full_name' => 'Ahmed Mohamed',
                 'email' => 'ahmed.mohamed@example.com',
@@ -154,7 +161,7 @@ class TrialImageService
             'course' => (object) [
                 'name' => 'Advanced English Conversation',
             ],
-            'created_at' => now()->subDays(1)->toDateTimeString(),
+            'created_at' => now()->subDays(2)->toDateTimeString(),
             'updated_at' => now()->toDateTimeString(),
         ];
     }
