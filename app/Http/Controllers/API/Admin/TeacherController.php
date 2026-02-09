@@ -656,7 +656,7 @@ class TeacherController extends Controller
             }
 
             // Get system link from config
-            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $frontendUrl = env('FRONTEND_URL', config('app.url', 'https://admin.elmcorner.com'));
             $systemLink = rtrim($frontendUrl, '/') . '/login';
 
             // Get credentials
@@ -733,7 +733,7 @@ class TeacherController extends Controller
             $user = $teacher->user;
             
             // Get system link from config
-            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $frontendUrl = env('FRONTEND_URL', config('app.url', 'https://admin.elmcorner.com'));
             $systemLink = rtrim($frontendUrl, '/') . '/login';
 
             return response()->json([

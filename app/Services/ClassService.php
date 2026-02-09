@@ -25,6 +25,31 @@ class ClassService
     }
 
     /**
+     * Calculate duration in minutes for time slots that may span midnight.
+     * 
+     * @param string $startTime Time in H:i format (e.g., "23:00")
+     * @param string $endTime Time in H:i format (e.g., "00:00")
+     * @return int Duration in minutes
+     */
+    protected function calculateDuration(string $startTime, string $endTime): int
+    {
+        list($startHour, $startMin) = explode(':', $startTime);
+        list($endHour, $endMin) = explode(':', $endTime);
+        
+        $startMinutes = (int)$startHour * 60 + (int)$startMin;
+        $endMinutes = (int)$endHour * 60 + (int)$endMin;
+        
+        // If end time is less than start time, it spans midnight
+        if ($endMinutes < $startMinutes) {
+            // Duration = (24 hours - start) + end
+            return (24 * 60 - $startMinutes) + $endMinutes;
+        }
+        
+        // Normal case: end - start
+        return $endMinutes - $startMinutes;
+    }
+
+    /**
      * Update class status with business logic for package deduction and billing.
      *
      * @param int $classId
@@ -292,9 +317,8 @@ class ClassService
     {
         $class = ClassInstance::with(['timetable'])->findOrFail($classId);
         
-        $start = Carbon::parse($newStartTime);
-        $end = Carbon::parse($newEndTime);
-        $duration = $start->diffInMinutes($end);
+        // Calculate duration (handles midnight-spanning times)
+        $duration = $this->calculateDuration($newStartTime, $newEndTime);
 
         $oldStudentId = $class->student_id;
         $oldTeacherId = $class->teacher_id;

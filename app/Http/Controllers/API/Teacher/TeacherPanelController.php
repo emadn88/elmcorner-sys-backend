@@ -15,6 +15,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
 
 class TeacherPanelController extends Controller
@@ -477,6 +478,8 @@ class TeacherPanelController extends Controller
             'class_report' => 'required_if:status,attended|string',
             'notes' => 'nullable|string',
             'send_whatsapp' => 'required|boolean',
+            'image' => 'nullable|image|mimes:jpeg,jpg,png,gif|max:10240', // 10MB max
+            'pdf' => 'nullable|mimes:pdf|max:10240', // 10MB max
         ]);
 
         $class = ClassInstance::where('id', $id)
@@ -507,6 +510,55 @@ class TeacherPanelController extends Controller
             $class->student_evaluation = $request->input('student_evaluation');
             $class->class_report = $request->input('class_report');
             $class->notes = $request->input('notes');
+            
+            // Handle file uploads
+            $imagePath = null;
+            $pdfPath = null;
+            
+            if ($request->hasFile('image')) {
+                $image = $request->file('image');
+                // Get file info before moving
+                $imageSize = $image->getSize();
+                $imageMime = $image->getMimeType();
+                
+                // Store directly in public directory
+                $publicPath = public_path('class-reports/images');
+                if (!file_exists($publicPath)) {
+                    mkdir($publicPath, 0755, true);
+                }
+                $imageName = 'class_' . $class->id . '_' . time() . '.' . $image->getClientOriginalExtension();
+                $image->move($publicPath, $imageName);
+                $imagePath = 'class-reports/images/' . $imageName;
+                
+                \Log::info('Image uploaded for class report', [
+                    'class_id' => $class->id,
+                    'image_path' => $imagePath,
+                    'image_size' => $imageSize,
+                    'image_mime' => $imageMime,
+                ]);
+            }
+            
+            if ($request->hasFile('pdf')) {
+                $pdf = $request->file('pdf');
+                // Get file info before moving
+                $pdfSize = $pdf->getSize();
+                
+                // Store directly in public directory
+                $publicPath = public_path('class-reports/pdfs');
+                if (!file_exists($publicPath)) {
+                    mkdir($publicPath, 0755, true);
+                }
+                $pdfName = 'class_' . $class->id . '_' . time() . '.pdf';
+                $pdf->move($publicPath, $pdfName);
+                $pdfPath = 'class-reports/pdfs/' . $pdfName;
+                
+                \Log::info('PDF uploaded for class report', [
+                    'class_id' => $class->id,
+                    'pdf_path' => $pdfPath,
+                    'pdf_size' => $pdfSize,
+                ]);
+            }
+            
             // Track when report is submitted (only if WhatsApp is sent, as per requirement)
             if ($request->input('send_whatsapp')) {
                 $class->report_submitted_at = now();
@@ -534,7 +586,7 @@ class TeacherPanelController extends Controller
             // Send WhatsApp if requested
             if ($request->input('send_whatsapp')) {
                 try {
-                    $this->sendReportViaWhatsApp($class);
+                    $this->sendReportViaWhatsApp($class, $imagePath, $pdfPath);
                 } catch (\Exception $e) {
                     // Log error but don't fail the request
                     \Log::error('Failed to send report via WhatsApp', [
@@ -588,7 +640,7 @@ class TeacherPanelController extends Controller
     /**
      * Send class report via WhatsApp
      */
-    protected function sendReportViaWhatsApp(ClassInstance $class): void
+    protected function sendReportViaWhatsApp(ClassInstance $class, ?string $imagePath = null, ?string $pdfPath = null): void
     {
         $student = $class->student;
         if (!$student || !$student->whatsapp) {
@@ -606,7 +658,137 @@ class TeacherPanelController extends Controller
 
         // Send via WhatsApp service
         $whatsAppService = app(\App\Services\WhatsAppService::class);
+        
+        // Send message first
         $whatsAppService->sendMessage($student->whatsapp, $message);
+        
+        // Send image if provided (skip on localhost)
+        if ($imagePath && file_exists(public_path($imagePath))) {
+            try {
+                // Get public URL for the image (stored directly in public directory)
+                $imageUrl = asset($imagePath);
+                
+                // Ensure we have a full absolute URL
+                $fullImageUrl = $imageUrl;
+                if (!filter_var($imageUrl, FILTER_VALIDATE_URL)) {
+                    // If it's a relative URL, make it absolute
+                    $fullImageUrl = config('app.url') . '/' . ltrim($imageUrl, '/');
+                }
+                
+                // Check if URL is publicly accessible (not localhost)
+                $isLocalhost = preg_match('/localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\./', $fullImageUrl);
+                
+                if ($isLocalhost) {
+                    \Log::info('Skipping image send on localhost - URL is not publicly accessible', [
+                        'class_id' => $class->id,
+                        'image_path' => $imagePath,
+                        'image_url' => $fullImageUrl,
+                        'note' => 'Image will be sent when deployed to a public server. Text message sent successfully.',
+                    ]);
+                } else {
+                    // Get image caption in student's language
+                    $imageCaption = $this->getImageCaption($language);
+                    
+                    \Log::info('Sending image via WhatsApp', [
+                        'class_id' => $class->id,
+                        'image_path' => $imagePath,
+                        'image_url' => $fullImageUrl,
+                        'student_phone' => $student->whatsapp,
+                    ]);
+                    
+                    $sent = $whatsAppService->sendImage($student->whatsapp, $fullImageUrl, $imageCaption, 'class_report_image');
+                    
+                    if (!$sent) {
+                        \Log::warning('Failed to send image via WhatsApp - sendImage returned false', [
+                            'class_id' => $class->id,
+                            'image_url' => $fullImageUrl,
+                        ]);
+                    } else {
+                        \Log::info('Image sent successfully via WhatsApp', [
+                            'class_id' => $class->id,
+                            'image_url' => $fullImageUrl,
+                        ]);
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::error('Failed to send image via WhatsApp', [
+                    'class_id' => $class->id,
+                    'image_path' => $imagePath,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+            }
+        } else {
+            \Log::info('No image to send or image does not exist', [
+                'class_id' => $class->id,
+                'image_path' => $imagePath,
+                'exists' => $imagePath ? file_exists(public_path($imagePath)) : false,
+            ]);
+        }
+        
+        // Send PDF if provided (as a link in message or document) - skip on localhost
+        if ($pdfPath && file_exists(public_path($pdfPath))) {
+            // Get public URL for the PDF (stored directly in public directory)
+            $pdfUrl = asset($pdfPath);
+            
+            // Ensure we have a full absolute URL
+            $fullPdfUrl = $pdfUrl;
+            if (!filter_var($pdfUrl, FILTER_VALIDATE_URL)) {
+                // If it's a relative URL, make it absolute
+                $fullPdfUrl = config('app.url') . '/' . ltrim($pdfUrl, '/');
+            }
+            
+            // Check if URL is publicly accessible (not localhost)
+            $isLocalhost = preg_match('/localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\./', $fullPdfUrl);
+            
+            if ($isLocalhost) {
+                \Log::info('Skipping PDF send on localhost - URL is not publicly accessible', [
+                    'class_id' => $class->id,
+                    'pdf_path' => $pdfPath,
+                    'pdf_url' => $fullPdfUrl,
+                    'note' => 'PDF link will be sent when deployed to a public server. Text message sent successfully.',
+                ]);
+            } else {
+                // Send PDF link in a separate message
+                $pdfMessage = $this->getPdfMessage($language, $fullPdfUrl);
+                try {
+                    $whatsAppService->sendMessage($student->whatsapp, $pdfMessage);
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to send PDF link via WhatsApp', [
+                        'class_id' => $class->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get image caption in specified language
+     */
+    protected function getImageCaption(string $language): string
+    {
+        $captions = [
+            'ar' => "📷 صورة تقرير الفصل",
+            'en' => "📷 Class Report Image",
+            'fr' => "📷 Image du rapport de classe",
+        ];
+        
+        return $captions[$language] ?? $captions['ar'];
+    }
+    
+    /**
+     * Get PDF message in specified language
+     */
+    protected function getPdfMessage(string $language, string $pdfUrl): string
+    {
+        $messages = [
+            'ar' => "📄 تقرير الفصل (PDF):\n{$pdfUrl}",
+            'en' => "📄 Class Report (PDF):\n{$pdfUrl}",
+            'fr' => "📄 Rapport de classe (PDF):\n{$pdfUrl}",
+        ];
+        
+        return $messages[$language] ?? $messages['ar'];
     }
 
     /**
@@ -1139,11 +1321,16 @@ MSG;
         }
 
         $this->classService->enterTrial($trial);
+        
+        // Reload trial with teacher relationship to get meet_link
+        $trial->refresh();
+        $trial->load(['teacher', 'student', 'course']);
 
         return response()->json([
             'status' => 'success',
             'message' => 'Trial marked as entered successfully',
-            'data' => $trial->fresh()->load(['student', 'course']),
+            'data' => $trial,
+            'meet_link' => $trial->teacher->meet_link ?? null,
         ]);
     }
 

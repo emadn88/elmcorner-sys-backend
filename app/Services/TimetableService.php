@@ -10,6 +10,31 @@ use Illuminate\Support\Facades\DB;
 class TimetableService
 {
     /**
+     * Calculate duration in minutes for time slots that may span midnight.
+     * 
+     * @param string $startTime Time in H:i format (e.g., "23:00")
+     * @param string $endTime Time in H:i format (e.g., "00:00")
+     * @return int Duration in minutes
+     */
+    protected function calculateDuration(string $startTime, string $endTime): int
+    {
+        list($startHour, $startMin) = explode(':', $startTime);
+        list($endHour, $endMin) = explode(':', $endTime);
+        
+        $startMinutes = (int)$startHour * 60 + (int)$startMin;
+        $endMinutes = (int)$endHour * 60 + (int)$endMin;
+        
+        // If end time is less than start time, it spans midnight
+        if ($endMinutes < $startMinutes) {
+            // Duration = (24 hours - start) + end
+            return (24 * 60 - $startMinutes) + $endMinutes;
+        }
+        
+        // Normal case: end - start
+        return $endMinutes - $startMinutes;
+    }
+
+    /**
      * Generate class instances from recurring timetable rules.
      *
      * @param int $timetableId
@@ -66,10 +91,8 @@ class TimetableService
                         continue;
                     }
 
-                    // Parse start and end times
-                    $startTime = Carbon::parse($slot['start']);
-                    $endTime = Carbon::parse($slot['end']);
-                    $duration = $startTime->diffInMinutes($endTime);
+                    // Calculate duration (handles midnight-spanning times)
+                    $duration = $this->calculateDuration($slot['start'], $slot['end']);
 
                     // Calculate student date and time
                     // Use manual time_difference_minutes if available, otherwise use timezone conversion
@@ -325,10 +348,8 @@ class TimetableService
             $class->start_time = $startTimeStr;
             $class->end_time = $endTimeStr;
             
-            // Recalculate duration
-            $startTime = Carbon::parse($startTimeStr);
-            $endTime = Carbon::parse($endTimeStr);
-            $class->duration = $startTime->diffInMinutes($endTime);
+            // Recalculate duration (handles midnight-spanning times)
+            $class->duration = $this->calculateDuration($startTimeStr, $endTimeStr);
 
             // Recalculate student date and time based on new timezone settings
             $teacherDate = $classDate->copy();

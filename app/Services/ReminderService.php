@@ -954,7 +954,7 @@ class ReminderService
             return $message;
         } elseif ($recipient === 'teacher') {
             // Teacher messages - always in Arabic with system link and credentials
-            $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
+            $frontendUrl = env('FRONTEND_URL', config('app.url', 'https://admin.elmcorner.com'));
             $systemLink = rtrim($frontendUrl, '/') . '/login';
             $user = $class->teacher->user;
             $email = $user->email ?? '';
